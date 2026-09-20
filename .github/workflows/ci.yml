@@ -64,12 +64,18 @@ jobs:
         run: python -m train.train_model
 
       - name: Unit tests
+        env:
+          INTENT_API_KEYS: ci-test-key
         run: pytest tests/unit -v
 
       - name: Integration tests
+        env:
+          INTENT_API_KEYS: ci-test-key
         run: pytest tests/integration -v
 
       - name: Behavioural tests (model quality gates)
+        env:
+          INTENT_API_KEYS: ci-test-key
         run: pytest tests/behavioural -v -m behavioural
 
       - name: Upload model artifact
@@ -96,7 +102,9 @@ jobs:
         run: docker build -t intent-service:ci .
 
       - name: Run container
-        run: docker run -d --name intent-ci -p 8000:8000 intent-service:ci
+        run: |
+          docker run -d --name intent-ci -p 8000:8000 \
+            -e INTENT_API_KEYS=ci-smoke-key intent-service:ci
 
       - name: Wait for health
         run: |
@@ -114,9 +122,17 @@ jobs:
         run: |
           response=$(curl -sf -X POST http://127.0.0.1:8000/predict \
             -H 'Content-Type: application/json' \
+            -H 'X-API-Key: ci-smoke-key' \
             -d '{"text":"وصلني المنتج تالف ومكسور"}')
           echo "$response"
           echo "$response" | grep -q '"intent":"complaint"'
+
+      - name: Verify unauthenticated requests are rejected
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/predict \
+            -H 'Content-Type: application/json' -d '{"text":"test"}')
+          echo "unauthenticated -> $code"
+          [ "$code" = "401" ]
 
       - name: Container logs on failure
         if: failure()

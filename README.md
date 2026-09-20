@@ -25,6 +25,7 @@ Classifies an Arabic customer-support message into one of six intents:
 ```bash
 curl -X POST http://127.0.0.1:8000/predict \
   -H 'Content-Type: application/json' \
+  -H 'X-API-Key: your-key' \
   -d '{"text":"وصلني الجهاز مكسور ومب شغال"}'
 ```
 ```json
@@ -42,16 +43,17 @@ pip install -e ".[dev,train]"
 python -m train.generate_dataset   # deterministic, seed=42
 python -m train.train_model        # writes models/intent_model.joblib
 
-pytest                             # 26 tests
+cp .env.example .env               # then set INTENT_API_KEYS in .env
+pytest                             # 53 tests
 uvicorn intent_service.api.main:app --reload
 ```
 
-With Docker:
+With Docker (full macOS walkthrough in [DOCKER.md](DOCKER.md)):
 
 ```bash
 docker build -t intent-service:local .
-docker run -p 8000:8000 intent-service:local
-# or
+docker run -p 8000:8000 -e INTENT_API_KEYS="your-key" intent-service:local
+# or, reading .env automatically:
 docker compose up --build
 ```
 
@@ -61,7 +63,7 @@ docker compose up --build
 
 | # | Objective | Where it lives |
 |---|---|---|
-| 1 | RESTful APIs serving ML models as reliable services | `src/intent_service/api/` — four endpoints, pydantic-validated contracts, correct status codes (200/422/500/503), graceful degradation when the artifact is missing |
+| 1 | RESTful APIs serving ML models as reliable services | `src/intent_service/api/` — four endpoints, pydantic-validated contracts, correct status codes (200/401/413/422/429/500/503), API-key auth, rate limiting, graceful degradation when the artifact is missing |
 | 2 | Containerised AI services with Docker and Compose | `Dockerfile` (two-stage: trains in the builder, ships only runtime deps), `docker-compose.yml` (healthcheck, restart policy, env-based config) |
 | 3 | Automated unit, integration, and model-behaviour tests | `tests/unit/` (no model loaded), `tests/integration/` (real API via TestClient), `tests/behavioural/` (model quality gates) |
 | 4 | CI/CD pipelines that verify and deploy AI code changes | `.github/workflows/ci.yml` — three dependent stages: quality → train & test → build image & smoke-test a live container |
@@ -157,10 +159,21 @@ environment variables (prefix `INTENT_`) or a `.env` file.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `INTENT_API_KEYS` | *(none)* | **Required.** Comma-separated accepted API keys |
+| `INTENT_REQUIRE_API_KEY` | `true` | Set `false` for local development only |
+| `INTENT_RATE_LIMIT_REQUESTS` | `60` | Requests allowed per window, per caller |
+| `INTENT_RATE_LIMIT_WINDOW_SECONDS` | `60` | Length of the rate-limit window |
+| `INTENT_CORS_ORIGINS` | *(empty)* | Empty denies all cross-origin requests |
+| `INTENT_MAX_REQUEST_BYTES` | `16384` | Bodies larger than this get `413` |
+| `INTENT_ENABLE_DOCS` | `true` | Set `false` to hide `/docs` in production |
 | `INTENT_MODEL_PATH` | `models/intent_model.joblib` | Where the artifact is read from |
+| `INTENT_CONFIDENCE_FLOOR` | `0.15` | Below this, responses set `low_confidence: true` |
 | `INTENT_LOG_LEVEL` | `INFO` | Log verbosity |
 | `INTENT_API_TITLE` | `Intent Classification Service` | Title shown in `/docs` |
-| `INTENT_CONFIDENCE_FLOOR` | `0.15` | Below this, responses set `low_confidence: true` |
+
+The service **refuses to start** if `INTENT_REQUIRE_API_KEY` is true while
+`INTENT_API_KEYS` is empty — a misconfiguration fails loudly at boot instead of
+silently rejecting every request.
 
 ---
 
@@ -187,7 +200,41 @@ The behavioural suite is the one that treats the model as the thing under test:
 
 ```
 $ pytest
-26 passed in 1.8s
+53 passed in 2.3s
+```
+
+---
+
+## Security
+
+Full policy in [SECURITY.md](SECURITY.md). Every control below is covered by a
+test and was verified against a running service.
+
+| Control | Behaviour |
+|---|---|
+| API key (`X-API-Key`) | Required on `/predict`, `/model-info`, `/metrics` → `401` without it |
+| Constant-time comparison | `secrets.compare_digest` — no timing oracle on the key |
+| Rate limiting | 60 req/60s per caller → `429` with `Retry-After` |
+| Body size cap | 16 KiB → `413`, checked before the body is read |
+| CORS | **Denied by default**; opened only via `INTENT_CORS_ORIGINS` |
+| Security headers | `nosniff`, `DENY`, `no-store`, CSP, Permissions-Policy — on every response including errors |
+| Non-root container | `appuser` (uid 1000), `no-new-privileges`, read-only filesystem |
+| Fail-fast config | Refuses to boot if auth is required but no keys are set |
+
+Three decisions worth defending:
+
+- **`/health` is open and exempt from rate limiting.** Liveness probes carry no
+  credentials, and a probe must never be throttled into a false "unhealthy".
+  It exposes only whether the artifact loaded.
+- **Authentication runs before inference.** An unauthenticated caller cannot
+  spend model compute — asserted by `test_auth_runs_before_the_model`.
+- **Rate limiting runs before authentication.** Counting rejected requests too
+  is what stops an attacker flooding the service with cheap `401`s.
+
+Generate a key with:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 ---
@@ -238,3 +285,11 @@ intent-service/
 │   └── api/{main,schemas,metrics}.py
 └── tests/{unit,integration,behavioural}/
 ```
+
+---
+
+## Licence
+
+Proprietary — all rights reserved. See [LICENSE](LICENSE). Instructors and
+authorised examiners of SDA-AIE-113 may access and run this code for
+assessment purposes only.

@@ -7,8 +7,14 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Reads from .env (copy .env.example). The service refuses to start
+      # without a key, so there is no accidental open deployment.
+      INTENT_API_KEYS: ${INTENT_API_KEYS:?set INTENT_API_KEYS in your .env file}
+      INTENT_REQUIRE_API_KEY: "true"
+      INTENT_RATE_LIMIT_REQUESTS: "60"
+      INTENT_RATE_LIMIT_WINDOW_SECONDS: "60"
+      INTENT_CORS_ORIGINS: ""
       INTENT_LOG_LEVEL: INFO
-      INTENT_CONFIDENCE_FLOOR: "0.15"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 30s
@@ -16,3 +22,8 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
