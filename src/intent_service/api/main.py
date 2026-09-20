@@ -4,6 +4,18 @@ This is the ONE place concrete implementations get wired together (the
 model adapter, the settings, the classifier, the security controls). Every
 layer below this file depends on abstractions only; this file is where
 reality is injected.
+
+NOTE: there is deliberately no module-level `app = create_app()`. Building
+the app reads configuration, so a module-level instance would do real work
+at import time -- importing this module would fail whenever the environment
+is incomplete, which breaks test collection and makes the failure look like
+a code bug rather than a missing variable. `create_app` is a factory,
+launched with:
+
+    uvicorn intent_service.api.main:create_app --factory
+
+This is the same principle the model adapter follows: nothing expensive or
+failable happens because someone imported a module.
 """
 
 import logging
@@ -72,14 +84,22 @@ def load_app_state(settings: Settings | None = None) -> AppState:
     )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    app.state.app_state = load_app_state()
-    yield
-
-
 def create_app(settings: Settings | None = None) -> FastAPI:
+    """Build the application.
+
+    `settings` is injected by tests; production passes nothing and the
+    configuration is read from the environment here -- at call time, never
+    at import time.
+    """
     resolved = settings or Settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Closes over `resolved`, so the running app always uses exactly the
+        # settings it was created with. Re-reading the environment here would
+        # silently ignore injected test configuration.
+        app.state.app_state = load_app_state(resolved)
+        yield
 
     app = FastAPI(
         title=resolved.api_title,
@@ -186,6 +206,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     return app
-
-
-app = create_app()

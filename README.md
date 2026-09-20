@@ -45,7 +45,7 @@ python -m train.train_model        # writes models/intent_model.joblib
 
 cp .env.example .env               # then set INTENT_API_KEYS in .env
 pytest                             # 53 tests
-uvicorn intent_service.api.main:app --reload
+uvicorn intent_service.api.main:create_app --factory --reload
 ```
 
 With Docker (full macOS walkthrough in [DOCKER.md](DOCKER.md)):

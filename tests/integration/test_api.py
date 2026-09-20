@@ -6,7 +6,7 @@ run first (the CI pipeline runs both before this suite)."""
 import pytest
 from fastapi.testclient import TestClient
 
-from intent_service.api.main import create_app, load_app_state
+from intent_service.api.main import create_app
 from intent_service.config import Settings
 
 TEST_KEY = "test-key-abc123"
@@ -33,9 +33,6 @@ def client():
     settings = _settings()
     app = create_app(settings)
     with TestClient(app) as c:
-        # The lifespan builds state from the environment; override it with
-        # the test settings so the suite never depends on ambient env vars.
-        c.app.state.app_state = load_app_state(settings)
         yield c
 
 
@@ -152,8 +149,6 @@ def test_rate_limit_returns_429_with_retry_after() -> None:
     settings = _settings(rate_limit_requests=2, rate_limit_window_seconds=60)
     app = create_app(settings)
     with TestClient(app) as c:
-        c.app.state.app_state = load_app_state(settings)
-
         c.get("/model-info", headers=AUTH)
         c.get("/model-info", headers=AUTH)
         blocked = c.get("/model-info", headers=AUTH)
@@ -167,8 +162,6 @@ def test_health_is_exempt_from_rate_limiting() -> None:
     settings = _settings(rate_limit_requests=1, rate_limit_window_seconds=60)
     app = create_app(settings)
     with TestClient(app) as c:
-        c.app.state.app_state = load_app_state(settings)
-
         codes = [c.get("/health").status_code for _ in range(5)]
 
     assert codes == [200] * 5
@@ -214,8 +207,6 @@ def test_service_reports_unhealthy_when_the_artifact_is_missing(tmp_path) -> Non
     settings = _settings(model_path=tmp_path / "absent.joblib")
     app = create_app(settings)
     with TestClient(app) as c:
-        c.app.state.app_state = load_app_state(settings)
-
         health = c.get("/health")
         predict = c.post("/predict", json={"text": "مرحبا"}, headers=AUTH)
 
