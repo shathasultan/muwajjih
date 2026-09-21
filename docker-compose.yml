@@ -16,7 +16,7 @@ services:
       INTENT_CORS_ORIGINS: ""
       INTENT_LOG_LEVEL: INFO
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/v1/ready', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

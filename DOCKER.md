@@ -61,11 +61,11 @@ docker compose up --build
 In a second Terminal tab:
 
 ```bash
-# Health needs no key
-curl http://127.0.0.1:8000/health
+# Readiness needs no key
+curl http://127.0.0.1:8000/v1/ready
 
 # Prediction needs the key
-curl -X POST http://127.0.0.1:8000/predict \
+curl -X POST http://127.0.0.1:8000/v1/predict \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: PASTE-YOUR-KEY-HERE' \
   -d '{"text":"وصلني الجهاز مكسور ومب شغال"}'
@@ -74,7 +74,7 @@ curl -X POST http://127.0.0.1:8000/predict \
 Expected:
 
 ```json
-{"status":"ok","model_loaded":true}
+{"ready":true,"model_loaded":true,"model_version":"v1.0.0"}
 {"intent":"complaint","confidence":0.23,"low_confidence":false,"model_version":"v1.0.0"}
 ```
 

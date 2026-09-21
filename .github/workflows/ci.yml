@@ -109,7 +109,7 @@ jobs:
       - name: Wait for health
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8000/health | grep -q '"model_loaded":true'; then
+            if curl -sf http://127.0.0.1:8000/v1/ready | grep -q '"ready":true'; then
               echo "service healthy"; exit 0
             fi
             sleep 2
@@ -120,7 +120,7 @@ jobs:
 
       - name: Smoke-test /predict
         run: |
-          response=$(curl -sf -X POST http://127.0.0.1:8000/predict \
+          response=$(curl -sf -X POST http://127.0.0.1:8000/v1/predict \
             -H 'Content-Type: application/json' \
             -H 'X-API-Key: ci-smoke-key' \
             -d '{"text":"وصلني المنتج تالف ومكسور"}')
@@ -129,7 +129,7 @@ jobs:
 
       - name: Verify unauthenticated requests are rejected
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/predict \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/v1/predict \
             -H 'Content-Type: application/json' -d '{"text":"test"}')
           echo "unauthenticated -> $code"
           [ "$code" = "401" ]

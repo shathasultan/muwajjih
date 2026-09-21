@@ -23,7 +23,7 @@ Classifies an Arabic customer-support message into one of six intents:
 | `return_refund` | طلب إرجاع أو استبدال أو استرداد مبلغ |
 
 ```bash
-curl -X POST http://127.0.0.1:8000/predict \
+curl -X POST http://127.0.0.1:8000/v1/predict \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: your-key' \
   -d '{"text":"وصلني الجهاز مكسور ومب شغال"}'
@@ -44,7 +44,7 @@ python -m train.generate_dataset   # deterministic, seed=42
 python -m train.train_model        # writes models/intent_model.joblib
 
 cp .env.example .env               # then set INTENT_API_KEYS in .env
-pytest                             # 53 tests
+pytest                             # 64 tests
 uvicorn intent_service.api.main:create_app --factory --reload
 ```
 
@@ -137,13 +137,27 @@ an envelope, pagination) never leaks inward.
 
 ## API
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/predict` | Classify one message |
-| `GET` | `/health` | Readiness probe — reports whether the model loaded |
-| `GET` | `/model-info` | Model version and the label set it was trained on |
-| `GET` | `/metrics` | Request counts, per-intent breakdown, error count |
-| `GET` | `/docs` | Auto-generated OpenAPI documentation |
+All routes are versioned under `/v1`, so a breaking change can ship as
+`/v2` while existing clients keep working.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/v1/predict` | API key | Classify one message |
+| `GET` | `/v1/health` | none | **Liveness** — no I/O, no model access, answers instantly |
+| `GET` | `/v1/ready` | none | **Readiness** — `503` until the model is loaded *and* warmed up |
+| `GET` | `/v1/model-info` | API key | Model version and the label set it was trained on |
+| `GET` | `/v1/metrics` | API key | Request counts, per-intent breakdown, error count |
+| `GET` | `/docs` | none | Auto-generated OpenAPI documentation |
+
+**Liveness and readiness are deliberately separate.** `/v1/health` answers
+"is the process alive" and touches nothing — restarting on its failure is
+correct only when the process itself is broken. `/v1/ready` answers "can this
+instance serve traffic", and stays `503` until a warm-up prediction has
+actually returned, so a load balancer never hands a real user the slow first
+request.
+
+Every prediction response carries a unique `trace_id`, also written to the
+logs, so one request can be found among thousands.
 
 Validation is enforced by pydantic at the boundary: empty text, missing fields,
 and text over 2000 characters all return `422` before the model is ever called —
