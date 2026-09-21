@@ -34,3 +34,14 @@ def test_requiring_auth_without_keys_fails_at_startup() -> None:
 
 def test_auth_can_be_disabled_explicitly_for_local_dev() -> None:
     assert Settings(require_api_key=False, api_keys="").require_api_key is False
+
+
+def test_docs_are_disabled_by_default() -> None:
+    """Secure by default: /docs enumerates every endpoint and schema."""
+    assert Settings(api_keys="k").enable_docs is False
+
+
+def test_proxy_headers_are_not_trusted_by_default() -> None:
+    """X-Forwarded-For is caller-controlled; trusting it unconditionally
+    would let anyone reset their own rate-limit budget."""
+    assert Settings(api_keys="k").trust_proxy_headers is False

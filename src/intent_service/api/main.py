@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from intent_service.adapters.sklearn_model import SklearnIntentModel
+from intent_service.api.logging_config import configure_logging
 from intent_service.api.metrics import MetricsRegistry
 from intent_service.api.schemas import (
     HealthResponse,
@@ -59,6 +60,9 @@ API_PREFIX = "/v1"
 # polls these without credentials, and throttling a probe turns a healthy
 # instance into a falsely-unhealthy one.
 PROBE_PATHS = frozenset({f"{API_PREFIX}/health", f"{API_PREFIX}/ready"})
+
+# Methods that may carry a request body, and therefore must declare its size.
+BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
 # Text used to warm the model at startup. Its result is discarded -- the
 # point is paying the first-call cost (lazy numpy/BLAS initialisation, page
@@ -126,6 +130,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     at import time.
     """
     resolved = settings or Settings()
+    # Do this first: everything below may log, and an unconfigured logger
+    # drops those lines silently.
+    configure_logging(resolved.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -163,17 +170,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state: AppState = request.app.state.app_state
 
         # 1. Reject oversized bodies before reading them into memory.
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > state.settings.max_request_bytes:
-            return JSONResponse(
-                {"detail": "request body too large"},
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                headers=SECURITY_HEADERS,
-            )
+        #    A Content-Length check alone is bypassable: a chunked request
+        #    carries no such header, so it would skip the limit entirely.
+        #    This API therefore *requires* Content-Length on any request with
+        #    a body, and answers 411 otherwise -- which is exactly what that
+        #    status code is for.
+        if request.method in BODY_METHODS:
+            declared = request.headers.get("content-length")
+            if declared is None or not declared.isdigit():
+                return JSONResponse(
+                    {"detail": "Content-Length header is required"},
+                    status_code=status.HTTP_411_LENGTH_REQUIRED,
+                    headers=SECURITY_HEADERS,
+                )
+            if int(declared) > state.settings.max_request_bytes:
+                return JSONResponse(
+                    {"detail": "request body too large"},
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    headers=SECURITY_HEADERS,
+                )
 
         # 2. Rate-limit everything except the probes.
         if request.url.path not in PROBE_PATHS:
-            allowed, retry_after = state.rate_limiter.check(caller_identity(request))
+            caller = caller_identity(request, state.settings.trust_proxy_headers)
+            allowed, retry_after = state.rate_limiter.check(caller)
             if not allowed:
                 state.metrics.record_error()
                 return JSONResponse(

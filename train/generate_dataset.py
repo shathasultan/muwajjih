@@ -88,6 +88,7 @@ def complaint_templates(rng: random.Random) -> str:
 
 def price_inquiry_templates(rng: random.Random) -> str:
     product = rng.choice(PRODUCTS)
+    amt = amount(rng)
     templates = [
         f"كم سعر {product} الحين؟ شفت عرض بس ما أعرف إذا لسه شغال",
         f"هل فيه خصم على {product} لو اشتريت قطعتين؟",
@@ -96,33 +97,50 @@ def price_inquiry_templates(rng: random.Random) -> str:
         f"عندكم تقسيط على {product}؟ وكم يكون القسط الشهري تقريباً؟",
         f"لو رجعت {product} خلال أسبوع هل أقدر أسترجع كامل المبلغ؟",
         f"هل الأسعار تختلف بين {rng.choice(CITIES)} و{rng.choice(CITIES)}؟",
+        f"شفت {product} بـ{amt} ريال عند غيركم، تقدرون تنافسون السعر؟",
+        f"كم يكلفني {product} مع التوصيل لـ{rng.choice(CITIES)}؟",
+        f"هل سعر {product} ثابت ولا ينزل بالعروض الموسمية؟",
+        f"وش أرخص خيار عندكم يقارب {product} بالمواصفات؟",
+        f"لو أخذت {product} مع الضمان الممتد، كم يصير الإجمالي؟",
     ]
     return rng.choice(templates)
 
 
 def support_request_templates(rng: random.Random) -> str:
     product = rng.choice(PRODUCTS)
+    n = rng.randint(2, 9)
     templates = [
-        f"كيف أربط {product} بالواي فاي؟ جربت كذا مرة ومب راضي يتوصل",
+        f"كيف أربط {product} بالواي فاي؟ جربت {n} مرات ومب راضي يتوصل",
         f"{product} يعطيني رسالة خطأ غريبة، وش الحل؟",
         f"وين أقدر ألقى دليل الاستخدام لـ {product}؟",
         f"هل {product} يحتاج تحديث برنامج؟ وكيف أسويه؟",
         f"ما أعرف أشغل خاصية التحكم الصوتي في {product}، ممكن مساعدة؟",
-        f"البطارية في {product} تفرغ بسرعة غريبة، هل فيه إعداد أضبطه؟",
+        f"البطارية في {product} تفرغ بعد {n} ساعات بس، هل فيه إعداد أضبطه؟",
         f"كيف أسوي ريست لـ {product} بدون ما أفقد إعداداتي؟",
+        f"حاولت أقرن {product} بجوالي {n} مرات وما ضبطت، وش الخطوات الصحيحة؟",
+        f"{product} ما يشتغل إلا لما أعيد تشغيله، كيف أحل هالمشكلة؟",
+        f"وش طريقة تنظيف {product} بدون ما أخرب أي جزء فيه؟",
+        f"هل أقدر أستخدم {product} مع أكثر من جهاز بنفس الوقت؟",
     ]
     return rng.choice(templates)
 
 
 def praise_templates(rng: random.Random) -> str:
     product = rng.choice(PRODUCTS)
+    city = rng.choice(CITIES)
+    order = order_number(rng)
+    d = days(rng)
     templates = [
         f"{product} فوق التوقعات، جودة ممتازة وسعر معقول",
-        "التوصيل كان أسرع من المتوقع والتغليف احترافي، شكراً لكم",
-        "خدمة العملاء ساعدوني بسرعة لما تواصلت، تجربة رائعة",
-        f"اشتريت {product} من عندكم واستخدمته أكثر من شهر، ما ندمت أبداً",
-        "موقعكم سهل جداً والدفع كان بدون أي مشاكل",
+        f"التوصيل لـ{city} كان أسرع من المتوقع والتغليف احترافي، شكراً لكم",
+        f"خدمة العملاء ساعدوني بسرعة لما تواصلت بخصوص {product}، تجربة رائعة",
+        f"اشتريت {product} من عندكم واستخدمته أكثر من {d} يوم، ما ندمت أبداً",
+        f"موقعكم سهل جداً والدفع كان بدون أي مشاكل، وصلني {product} بسرعة",
         f"{product} بالضبط زي الوصف، ما فيه أي مبالغة بالإعلان",
+        f"جربت {product} وأنصح فيه بقوة، يستاهل كل ريال",
+        f"وصلني الطلب {order} قبل الموعد وبحالة ممتازة، شكراً",
+        f"{product} صار من أفضل مشترياتي هالسنة، جودته ثابتة بعد {d} يوم",
+        f"تعاملكم راقي والتغليف ممتاز، {product} وصل سليم لـ{city}",
     ]
     return rng.choice(templates)
 
@@ -172,6 +190,8 @@ PER_LABEL = 300  # total examples per intent before splitting
 
 def generate_examples(rng: random.Random) -> list[tuple[str, str]]:
     examples: set[tuple[str, str]] = set()
+    shortfalls: dict[str, int] = {}
+
     for label, template_fn in INTENTS.items():
         attempts = 0
         count = 0
@@ -184,6 +204,19 @@ def generate_examples(rng: random.Random) -> list[tuple[str, str]]:
             if (text, label) not in examples:
                 examples.add((text, label))
                 count += 1
+        if count < PER_LABEL:
+            shortfalls[label] = count
+
+    if shortfalls:
+        # Silence here would be the real bug: a label quietly producing a
+        # fraction of the requested examples skews the class balance, and a
+        # headline accuracy computed over an imbalanced split is misleading.
+        # Fix by adding templates or slot values for the named labels.
+        print("\n[WARNING] label(s) exhausted their unique template combinations:")
+        for label, count in sorted(shortfalls.items()):
+            print(f"  {label}: {count}/{PER_LABEL} ({count / PER_LABEL:.0%})")
+        print("  -> add templates or slot values in train/generate_dataset.py\n")
+
     return sorted(examples)  # sorted for a fully deterministic file order
 
 

@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     # --- service -----------------------------------------------------------
     log_level: str = "INFO"
     api_title: str = "Intent Classification Service"
-    enable_docs: bool = True
+    # Secure by default: interactive docs enumerate every endpoint and
+    # schema, so they are opt-in rather than opt-out.
+    enable_docs: bool = False
 
     # --- authentication ----------------------------------------------------
     # Comma-separated list, e.g. INTENT_API_KEYS="key-one,key-two".
@@ -44,6 +46,9 @@ class Settings(BaseSettings):
     # API with no known browser client.
     cors_origins: str = ""
     max_request_bytes: int = Field(default=16_384, ge=1)
+    # Enable ONLY when a trusted reverse proxy overwrites
+    # X-Forwarded-For. The header is caller-controlled otherwise.
+    trust_proxy_headers: bool = False
 
     @property
     def api_key_list(self) -> list[str]:

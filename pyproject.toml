@@ -34,6 +34,14 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["behavioural: model-quality tests that need the trained artifact"]
+addopts = "--cov=src/intent_service --cov-report=term-missing --cov-fail-under=85"
+
+[tool.coverage.run]
+branch = true
+source = ["src/intent_service"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
 
 [tool.ruff]
 line-length = 100

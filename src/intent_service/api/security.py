@@ -64,10 +64,12 @@ class SlidingWindowRateLimiter:
     max_requests: int
     window_seconds: float
     _hits: dict[str, deque[float]] = field(default_factory=lambda: defaultdict(deque))
+    _last_sweep: float = field(default_factory=time.monotonic)
 
     def check(self, caller: str) -> tuple[bool, int]:
         """Return (allowed, retry_after_seconds)."""
         now = time.monotonic()
+        self._sweep_if_due(now)
         window = self._hits[caller]
 
         # Drop timestamps that fell out of the window.
@@ -82,14 +84,52 @@ class SlidingWindowRateLimiter:
         window.append(now)
         return True, 0
 
+    def _sweep_if_due(self, now: float) -> None:
+        """Drop callers whose window has fully expired.
 
-def caller_identity(request: Request) -> str:
-    """Identify the caller for rate-limiting purposes."""
+        Without this the dict grows for the lifetime of the process: every
+        distinct IP or key adds an entry that is never removed, so a caller
+        rotating addresses -- or simply long-running normal traffic -- leaks
+        memory. Sweeping is amortised (once per window at most) so the hot
+        path stays O(1).
+        """
+        if now - self._last_sweep < self.window_seconds:
+            return
+        self._last_sweep = now
+        cutoff = now - self.window_seconds
+        stale = [
+            caller for caller, window in self._hits.items() if not window or window[-1] <= cutoff
+        ]
+        for caller in stale:
+            del self._hits[caller]
+
+    @property
+    def tracked_callers(self) -> int:
+        """Exposed for tests and for a future gauge metric."""
+        return len(self._hits)
+
+
+def caller_identity(request: Request, trust_proxy: bool = False) -> str:
+    """Identify the caller for rate-limiting purposes.
+
+    `X-Forwarded-For` is only consulted when `trust_proxy` is enabled,
+    because the header is caller-controlled: trusting it unconditionally
+    would let anyone reset their own rate-limit budget by sending a fresh
+    value each request. Behind a proxy that overwrites the header, enabling
+    it is what stops every user sharing the proxy's single bucket.
+    """
     key = request.headers.get(API_KEY_HEADER)
     if key:
         # Never use the raw key as a dict key that might be logged -- a short
         # prefix is enough to separate callers without storing the secret.
         return f"key:{key[:8]}"
+
+    if trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            # Left-most entry is the original client.
+            return f"ip:{forwarded.split(',')[0].strip()}"
+
     client = request.client
     return f"ip:{client.host}" if client else "ip:unknown"
 

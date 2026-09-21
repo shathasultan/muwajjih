@@ -56,3 +56,29 @@ def test_window_slides_so_budget_recovers() -> None:
     time.sleep(0.06)
 
     assert limiter.check("caller")[0] is True
+
+
+def test_expired_callers_are_swept_from_memory() -> None:
+    """Without sweeping, the dict grows for the process lifetime: every new
+    IP adds an entry that is never removed."""
+    limiter = SlidingWindowRateLimiter(max_requests=5, window_seconds=0.05)
+    for i in range(50):
+        limiter.check(f"caller-{i}")
+
+    assert limiter.tracked_callers == 50
+
+    time.sleep(0.06)
+    limiter.check("someone-new")  # triggers the amortised sweep
+
+    assert limiter.tracked_callers == 1
+
+
+def test_sweep_keeps_callers_still_inside_their_window() -> None:
+    limiter = SlidingWindowRateLimiter(max_requests=5, window_seconds=0.05)
+    limiter.check("old")
+    time.sleep(0.06)
+    limiter.check("recent")
+    limiter.check("recent-again")
+
+    assert "ip:old" not in limiter._hits
+    assert limiter.tracked_callers == 2

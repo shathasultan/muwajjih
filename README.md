@@ -29,7 +29,8 @@ curl -X POST http://127.0.0.1:8000/v1/predict \
   -d '{"text":"وصلني الجهاز مكسور ومب شغال"}'
 ```
 ```json
-{"intent":"complaint","confidence":0.53,"low_confidence":false,"model_version":"v1.0.0"}
+{"intent":"complaint","confidence":0.31,"low_confidence":false,
+ "model_version":"v1.0.0","trace_id":"4398c99b-54ef-4735-9217-2614b20dae8a"}
 ```
 
 ---
@@ -44,7 +45,7 @@ python -m train.generate_dataset   # deterministic, seed=42
 python -m train.train_model        # writes models/intent_model.joblib
 
 cp .env.example .env               # then set INTENT_API_KEYS in .env
-pytest                             # 64 tests
+pytest                             # 71 tests
 uvicorn intent_service.api.main:create_app --factory --reload
 ```
 
@@ -124,8 +125,9 @@ logged traceback, and an incremented error counter). Returning a plausible-looki
 default intent on failure would hide outages from every downstream consumer.
 
 **A missing artifact degrades, it does not crash-loop.** If the model file is
-absent at startup the service still boots and reports `model_loaded: false` on
-`/health`, with `/predict` returning 503. An orchestrator sees a clear unhealthy
+absent at startup the service still boots: `/v1/health` keeps answering 200
+(the process is alive), while `/v1/ready` reports 503 with
+`model_loaded: false` and `/v1/predict` returns 503. An orchestrator sees a clear unhealthy
 signal instead of a container restarting with no explanation.
 
 **API schemas are separate from domain entities.** `api/schemas.py` holds the
@@ -168,8 +170,10 @@ and those requests are deliberately *not* counted as served predictions in
 
 ## Configuration
 
-All settings are optional and default to working values. Override via
-environment variables (prefix `INTENT_`) or a `.env` file.
+`INTENT_API_KEYS` is **required** -- the service refuses to start without it
+unless authentication is explicitly disabled. Everything else is optional and
+defaults to a safe value. Override via environment variables (prefix
+`INTENT_`) or a `.env` file.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -179,7 +183,8 @@ environment variables (prefix `INTENT_`) or a `.env` file.
 | `INTENT_RATE_LIMIT_WINDOW_SECONDS` | `60` | Length of the rate-limit window |
 | `INTENT_CORS_ORIGINS` | *(empty)* | Empty denies all cross-origin requests |
 | `INTENT_MAX_REQUEST_BYTES` | `16384` | Bodies larger than this get `413` |
-| `INTENT_ENABLE_DOCS` | `true` | Set `false` to hide `/docs` in production |
+| `INTENT_ENABLE_DOCS` | `false` | Set `true` to expose the interactive `/docs` |
+| `INTENT_TRUST_PROXY_HEADERS` | `false` | Read `X-Forwarded-For` for rate-limit identity — only behind a trusted proxy |
 | `INTENT_MODEL_PATH` | `models/intent_model.joblib` | Where the artifact is read from |
 | `INTENT_CONFIDENCE_FLOOR` | `0.15` | Below this, responses set `low_confidence: true` |
 | `INTENT_LOG_LEVEL` | `INFO` | Log verbosity |
@@ -214,7 +219,7 @@ The behavioural suite is the one that treats the model as the thing under test:
 
 ```
 $ pytest
-53 passed in 2.3s
+71 passed
 ```
 
 ---
@@ -257,23 +262,34 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 These are real and worth stating rather than hiding:
 
-1. **The dataset is synthetic and lexically separable.** Test accuracy is 100%,
-   which reflects the data being template-generated, not a model that would hold
-   up on real customer messages. The generalisation probes in the behavioural
+1. **The dataset is synthetic and lexically separable.** Test accuracy is 100%
+   across a balanced 45-per-class split, which reflects the data being
+   template-generated, not a model that would hold up on real customer
+   messages. The generalisation probes in the behavioural
    suite are the meaningful signal here, not the headline accuracy. Replacing
    `train/generate_dataset.py` with real labelled messages is the single highest-value
    next step.
-2. **Class balance is uneven after splitting.** `praise` and `support_request`
-   have fewer unique template combinations, so they are under-represented in the
-   splits relative to `complaint` and `order_status`.
+2. **Every class is balanced, but only because the generator was tuned to make
+   it so.** Each label reaches its full quota of unique examples, and the
+   generator now prints a warning naming any label that exhausts its template
+   combinations early -- silence there would hide a skewed split behind a
+   healthy-looking accuracy number.
 3. **`LinearSVC` has no calibrated probabilities.** The `confidence` field is a
    softmax over decision-function margins — useful for ranking and for the
    `low_confidence` flag, but it is not a true probability and should not be read
    as one.
 4. **`/metrics` is an in-process counter.** It resets on restart and is not
    aggregated across replicas. A real deployment would export to Prometheus.
-5. **No authentication.** The API is unauthenticated by design for the course
-   scope; any public deployment needs an auth layer first.
+5. **API keys are static shared secrets.** There is no rotation, no expiry and
+   no per-key scope. A production system should move to short-lived tokens
+   (OAuth2 / JWT) issued per client.
+6. **The body-size limit relies on `Content-Length`.** Requests without it are
+   rejected with `411` rather than being streamed and measured, so a proxy-level
+   limit is still the right outer defence.
+7. **Rate-limit identity falls back to the socket IP.** Behind a reverse proxy
+   every unauthenticated caller would share one bucket, so set
+   `INTENT_TRUST_PROXY_HEADERS=true` *only* when a trusted proxy overwrites
+   `X-Forwarded-For` -- the header is caller-controlled otherwise.
 
 ---
 

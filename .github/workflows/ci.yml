@@ -37,6 +37,11 @@ jobs:
       - name: Mypy (static types, strict)
         run: mypy src
 
+      - name: pip-audit (known vulnerabilities in dependencies)
+        run: |
+          pip install pip-audit
+          pip-audit --strict
+
   # -------------------------------------------------------------------------
   # Stage 2: train the model from source, then run all three test layers.
   # Training happens in CI (not a committed binary) because the dataset
@@ -141,3 +146,47 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm -f intent-ci || true
+
+  # -------------------------------------------------------------------------
+  # Stage 4: deploy. Only runs for pushes to main that already passed every
+  # gate above -- a pull request builds and smoke-tests the image but never
+  # publishes it. This is the CD half of "CI/CD".
+  # -------------------------------------------------------------------------
+  publish:
+    name: Publish image to GHCR
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # Every image is traceable to the exact commit that produced it.
+          tags: |
+            type=raw,value=latest
+            type=sha,format=long
+            type=ref,event=branch
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
