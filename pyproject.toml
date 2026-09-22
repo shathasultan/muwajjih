@@ -35,6 +35,10 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# PEP 561: ship the marker so anything importing this package gets its types.
+[tool.setuptools.package-data]
+intent_service = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
@@ -79,5 +83,5 @@ packages = ["intent_service"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["joblib", "sklearn.*"]
+module = ["joblib", "sklearn.*", "pandas"]
 ignore_missing_imports = true
