@@ -4,8 +4,17 @@ A production-shaped ML service that makes an **operational decision**, not a
 prediction. It reads an Arabic customer message and decides one of three
 things: route it automatically, send it to a human, or return it to the sender.
 
-Built as the capstone for **SDA-AIE-113 — Software Engineering Practices for
-AI Systems**.
+This project was completed as part of the **SDA-AIE-113 — Software Engineering
+Practices for AI Systems** training program at **SDAIA Academy**, under the
+supervision of **Abdullah Khalid AlShahrani**.
+
+The portfolio demonstrates the practical application of software engineering
+practices for AI systems — building a production-style AI/ML service through
+clean architecture, a well-defined API contract, containerization, a layered
+automated testing suite, a CI/CD pipeline with branch protection, and safe
+configuration, secrets, and logging management.
+
+Official SDAIA Academy GitHub: https://github.com/SDAIAAcademy
 
 > ### Track B — own idea
 >
@@ -43,6 +52,90 @@ curl -X POST http://127.0.0.1:8000/v1/predict \
   "error": null,
   "meta": { "trace_id": "4398c99b-54ef-4735-9217-2614b20dae8a" }
 }
+```
+
+---
+
+## A verified run
+
+Every response below is copied verbatim from a real run of this service, in
+the container built from this repository, on 2026-09-22. Nothing is
+illustrative. Reproduce it with `make compose-up` and the commands in the next
+section.
+
+**1 — Readiness.** Redis reaches `Healthy` before the API is started at all;
+`/v1/ready` then reports which cache backend actually attached, rather than
+which one was configured.
+
+```json
+{"data":{"ready":true,"model_loaded":true,"model_version":"v1.0.0",
+         "cache_backend":"redis","cache_healthy":true},
+ "error":null,"meta":{"trace_id":"1fcde103-71e8-454a-8eca-36fa9e92bc66"}}
+```
+
+**2 — A confident message is acted on automatically.** Note that the answer is
+a decision with a written justification, not a label.
+
+```
+POST /v1/predict  {"text":"وين طلبي؟ صار له اسبوع وما وصل"}
+```
+```json
+{"data":{"action":"auto_route","department":"logistics","priority":"normal",
+         "intent":"order_status","confidence":0.9566265812119552,
+         "urgency_signals":[],
+         "reason":"confident_classification: confidence 0.957 >= auto_route_floor 0.600",
+         "model_version":"v1.0.0","cached":false},
+ "error":null,"meta":{"trace_id":"107f3eec-e272-46c4-adbe-69581a4cec0e"}}
+```
+
+**3 — The safety rule overrides a model that is wrong.** This is the case the
+whole design exists for. The classifier reads a gas-leak report as `praise`,
+at 0.370 confidence — below the 0.600 automation floor, so on the model's word
+alone this message would have gone to a human queue as ordinary feedback.
+
+```
+POST /v1/predict  {"text":"في تسرب غاز من السخان والرائحة قوية"}
+```
+```json
+{"data":{"action":"auto_route","department":"safety","priority":"urgent",
+         "intent":"praise","confidence":0.3699270872536515,
+         "urgency_signals":["تسرب","غاز"],
+         "reason":"safety_escalation: message contains urgency terms (تسرب, غاز); routed to safety at urgent priority, overriding both the model's department (customer_relations) and its confidence (0.370)",
+         "model_version":"v1.0.0","cached":true},
+ "error":null,"meta":{"trace_id":"fb90902c-dcf1-41c8-80e1-849cc4b9eca7"}}
+```
+
+Three things in that one response:
+
+- `priority: urgent` and `action: auto_route` — escalated despite the model
+- `department: safety` — and routed to the team that handles emergencies, not
+  to `customer_relations`, which is where the model's own answer pointed
+- `reason` names the department it overrode and the confidence it ignored, so
+  an operator finding a `praise` message in the safety queue reads an
+  explanation rather than a bug
+
+`cached: true` is the extension working: this exact text had been sent before,
+so the decision came from Redis instead of a second inference — measured at
+186× faster in BENCHMARKS.md.
+
+**4 — A malformed request gets the same envelope.** `data` is null, `error` is
+populated, the trace id is still in the same place, and the offending key is
+named.
+
+```
+POST /v1/predict  {"txt":"حقل غلط"}        → 422
+```
+```json
+{"data":null,
+ "error":{"code":"validation_error","message":"the request body failed validation",
+          "fields":["body.text","body.txt"]},
+ "meta":{"trace_id":"522a8e2c-fced-40ff-8ea1-5a927a3375d0"}}
+```
+
+**5 — An unauthenticated request is refused.**
+
+```
+POST /v1/predict  (no X-API-Key)           → 401
 ```
 
 ---
@@ -401,6 +494,14 @@ Stated rather than hidden — each is a real constraint of this build.
   cache speed-up, 14 s fast gate, 96% branch coverage, confidence separation
 - [SECURITY.md](SECURITY.md) — threat model and the controls in place
 - [DOCKER.md](DOCKER.md) — container internals
+
+## Acknowledgement
+
+This project was completed as part of the **SDA-AIE-113 — Software Engineering
+Practices for AI Systems** training program at **SDAIA Academy**, under the
+supervision of **Abdullah Khalid AlShahrani**.
+
+Official SDAIA Academy GitHub: https://github.com/SDAIAAcademy
 
 ## Licence
 
