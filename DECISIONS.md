@@ -37,6 +37,23 @@ can drift out of step with the model it thresholds. Mitigated by
 `GET /v1/policy`, which reports the live thresholds of a running instance, and
 by folding both into the cache key (see #5).
 
+**A correction this decision needed.** The first version of the policy
+overrode the model's *priority* on urgency but still took the *department*
+from its inferred intent. That is coherent right up until the model is wrong
+about an emergency — which is exactly when it is most likely to be. A live run
+produced:
+
+```
+"في تسرب غاز من السخان والرائحة قوية"
+  intent praise · confidence 0.370 · priority urgent · department customer_relations
+```
+
+Escalated correctly, and routed urgently to the wrong team. The fix is that an
+override is now total: escalated messages go to a dedicated `safety`
+department that no intent maps to, so the model cannot route anything there
+and cannot route an emergency away from it. The golden file records the three
+decisions this changed, and nothing else moved.
+
 ---
 
 ## 2. Word + character features, because character-only over-fit the generator

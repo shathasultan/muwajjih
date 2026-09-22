@@ -139,6 +139,11 @@ Six intents, each owned by a department:
 | `order_status` | `logistics` | سؤال عن حالة الطلب أو التوصيل |
 | `return_refund` | `returns` | طلب إرجاع أو استبدال أو استرداد |
 
+A seventh department, `safety`, exists but no intent maps to it. It is
+reachable only through the escalation rule below — the model cannot route
+anything there on its own, so a classifier error can never bury a real
+emergency under ordinary traffic.
+
 And one of three actions:
 
 | Action | When | What the caller does |
@@ -154,9 +159,29 @@ empty gap between them. See [BENCHMARKS.md](BENCHMARKS.md).
 ### The safety rule
 
 A message containing a term from a small, hand-curated list (`حريق`, `تسرب`,
-`غاز`, `دخان`, `انفجار`, `اصابة`, …) is escalated to `urgent` and
-auto-routed **regardless of model confidence**. A false escalation costs one
-wasted human minute; a missed gas leak does not compare.
+`غاز`, `دخان`, `انفجار`, `اصابة`, …) is escalated to `urgent`, auto-routed,
+and sent to the `safety` department — **overriding both the model's
+confidence and its department**. A false escalation costs one wasted human
+minute; a missed gas leak does not compare.
+
+The department override is the part that was learned the hard way. An earlier
+version escalated the priority but still took the department from the model,
+which is fine until the model is wrong about an emergency — and that is
+precisely when it is most likely to be. Observed in a live run:
+
+```
+"في تسرب غاز من السخان والرائحة قوية"
+  intent:     praise          ← the model is badly wrong
+  confidence: 0.370           ← and knows it is unsure
+  priority:   urgent          ✅ escalated correctly
+  department: customer_relations   ❌ urgently, to the wrong team
+```
+
+A message the classifier cannot read is exactly where its opinion is worth
+least. So when the policy overrides the model, it now overrides it
+completely. `tests/behavioural/test_directional.py` pins this against the real
+model, including a case with praise-shaped wording wrapped around an
+emergency.
 
 The list is deliberately hand-written rather than learned, so it is reviewable
 by a non-engineer and does not change silently when the model is retrained. The

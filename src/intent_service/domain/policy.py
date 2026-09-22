@@ -40,7 +40,12 @@ Department = Literal[
     "customer_relations",
     "logistics",
     "returns",
+    "safety",
 ]
+
+# Where an escalated message goes, regardless of what the classifier thought it
+# was about. See `decide()` for why this overrides DEPARTMENT_BY_INTENT.
+SAFETY_DEPARTMENT: Department = "safety"
 
 # Which team owns which kind of message. A map, not a chain of ifs: adding a
 # seventh intent is a one-line change that the type checker forces you to
@@ -192,17 +197,30 @@ def decide(
     department = DEPARTMENT_BY_INTENT[intent]
 
     if signals:
+        # The department is overridden too, not just the priority.
+        #
+        # This is the lesson of a real failure. Escalating on urgency while
+        # still taking the DEPARTMENT from the model means a message the
+        # classifier misread goes to the wrong team -- urgently. Observed:
+        # "في تسرب غاز من السخان" scored 0.37 as `praise`, so it was correctly
+        # marked urgent and then correctly sent to... customer relations.
+        #
+        # An escalation the model does not understand is exactly the case where
+        # its opinion is worth least. So when the policy overrides the model, it
+        # overrides it completely: urgent, auto-routed, and to the team that
+        # handles emergencies.
         return TriageDecision(
             action="auto_route",
-            department=department,
+            department=SAFETY_DEPARTMENT,
             priority="urgent",
             intent=intent,
             confidence=confidence,
             urgency_signals=signals,
             reason=(
                 "safety_escalation: message contains urgency terms "
-                f"({', '.join(signals)}); routed immediately regardless of "
-                "model confidence"
+                f"({', '.join(signals)}); routed to {SAFETY_DEPARTMENT} at "
+                "urgent priority, overriding both the model's department "
+                f"({department}) and its confidence ({confidence:.3f})"
             ),
             model_version=model_version,
         )

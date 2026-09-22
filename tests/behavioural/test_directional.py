@@ -16,7 +16,12 @@ import pytest
 
 from intent_service.adapters.sklearn_model import SklearnIntentModel
 from intent_service.domain.entities import CustomerMessage
-from intent_service.domain.policy import URGENCY_TERMS, PolicyThresholds, decide
+from intent_service.domain.policy import (
+    SAFETY_DEPARTMENT,
+    URGENCY_TERMS,
+    PolicyThresholds,
+    decide,
+)
 from intent_service.service.triage import TriageService
 
 pytestmark = pytest.mark.behavioural
@@ -74,6 +79,27 @@ def test_adding_an_urgency_term_never_causes_a_rejection(service: TriageService,
     after = triage(service, f"{base} وصار حريق في البيت")
     assert after.action == "auto_route"
     assert after.urgency_signals
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "في تسرب غاز من السخان والرائحة قوية في كل البيت",
+        "صار حريق في لوحة الكهرباء بعد ما ركبت الجهاز",
+        "الجهاز طلع منه دخان وشرارة والحمدلله ما صار اصابة",
+        "والله خدمتكم ممتازة بس صار حريق في الجهاز",
+    ],
+)
+def test_escalated_messages_reach_the_safety_team(service: TriageService, text: str) -> None:
+    """Against the REAL model, including inputs it misreads.
+
+    The last case is the one that matters: praise-shaped wording wrapped around
+    an emergency. The classifier calls it `praise` with low confidence -- and it
+    must still land in the safety queue, not customer relations."""
+    decision = triage(service, text)
+    assert decision.department == SAFETY_DEPARTMENT
+    assert decision.priority == "urgent"
+    assert decision.action == "auto_route"
 
 
 @pytest.mark.parametrize("term", sorted(URGENCY_TERMS))

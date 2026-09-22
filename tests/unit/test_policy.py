@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from intent_service.domain.policy import (
     DEPARTMENT_BY_INTENT,
+    SAFETY_DEPARTMENT,
     PolicyThresholds,
     decide,
     detect_urgency,
@@ -74,6 +75,38 @@ def test_urgency_term_forces_urgent_priority_and_auto_route() -> None:
     # Escalated despite a confidence that would otherwise be rejected.
     assert decision.action == "auto_route"
     assert "غاز" in decision.urgency_signals
+
+
+@pytest.mark.parametrize("intent", sorted(DEPARTMENT_BY_INTENT))
+def test_escalation_overrides_the_department_for_every_intent(intent: str) -> None:
+    """The bug this pins: escalating on urgency while still taking the
+    DEPARTMENT from the model sends a misread message to the wrong team --
+    urgently. A real gas-leak message scored 0.37 as `praise`, so it was
+    correctly marked urgent and then routed to customer relations.
+
+    A message the classifier does not understand is exactly where its opinion
+    is worth least, so the override is total."""
+    decision = run(text="في تسرب غاز في المطبخ", intent=intent, confidence=0.05)
+    assert decision.department == SAFETY_DEPARTMENT
+    assert decision.department != DEPARTMENT_BY_INTENT[intent] or intent is None
+
+
+def test_the_safety_department_is_reachable_only_by_escalation() -> None:
+    """It must not be something the model can route to on its own -- otherwise
+    a classifier error could send ordinary traffic to the emergency team and
+    bury a real one."""
+    assert SAFETY_DEPARTMENT not in DEPARTMENT_BY_INTENT.values()
+    for intent in DEPARTMENT_BY_INTENT:
+        for confidence in (0.99, 0.5, 0.01):
+            assert run(intent=intent, confidence=confidence).department != SAFETY_DEPARTMENT
+
+
+def test_the_reason_names_the_department_it_overrode() -> None:
+    """An operator seeing a `praise` message in the safety queue needs the
+    decision to say why, or it reads as a bug."""
+    decision = run(text="صار حريق", intent="praise", confidence=0.37)
+    assert "safety" in decision.reason
+    assert "customer_relations" in decision.reason
 
 
 def test_urgency_signals_are_sorted_and_deduplicated() -> None:
