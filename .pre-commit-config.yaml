@@ -29,3 +29,23 @@ repos:
           - pydantic-settings>=2.4.0
           - fastapi>=0.115.0
           - numpy>=1.26.0
+          - types-redis
+
+  # Catch a secret before it reaches the history, not after. The CI job scans
+  # the full history as a backstop, but by then a leaked key needs rotating --
+  # this hook is what stops it being committed at all.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # The architecture contract, enforced locally as well as in CI. A layering
+  # violation caught here costs a minute; caught in review it costs a rewrite.
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: import-linter (architecture contract)
+        entry: lint-imports
+        language: system
+        pass_filenames: false
+        files: ^src/

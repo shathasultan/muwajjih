@@ -44,4 +44,19 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/v1/ready', timeout=3)" || exit 1
 
-CMD ["uvicorn", "intent_service.api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# Exec form, so uvicorn is PID 1 and receives SIGTERM directly from
+# `docker stop`. The shell form would put /bin/sh at PID 1, which does not
+# forward signals -- the container would ignore SIGTERM and be SIGKILLed ten
+# seconds later, dropping every in-flight request. scripts/smoke.sh asserts
+# the clean exit code this produces.
+#
+# --timeout-graceful-shutdown gives in-flight requests a bounded window to
+# finish before the worker is torn down; it is deliberately shorter than
+# compose's stop_grace_period so uvicorn, not the daemon, decides how the
+# shutdown ends.
+CMD ["uvicorn", "intent_service.api.main:create_app", \
+     "--factory", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--timeout-graceful-shutdown", "15", \
+     "--no-server-header"]
