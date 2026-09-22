@@ -146,9 +146,10 @@ bug is a wrong decision shipped to a customer rather than a 500 — are at 100%.
 
 ## Container
 
-Measured in CI run
-[#6](https://github.com/shathasultan/custom-ai-model/actions/runs/35697527948),
-commit `d3179e2`.
+Measured by the `image` job of the CI pipeline, which builds the container,
+asserts the size budget and runs `scripts/smoke.sh` against it on every push.
+The size is also written into each run's job summary, so the figure below is
+re-verified continuously rather than being a one-off reading.
 
 | Metric | Value |
 |---|---|

@@ -7,6 +7,20 @@ things: route it automatically, send it to a human, or return it to the sender.
 Built as the capstone for **SDA-AIE-113 — Software Engineering Practices for
 AI Systems**.
 
+> ### Track B — own idea
+>
+> Customer-message triage, following the same decision shape as *Muwajjih*
+> in the ready list (route to the right department + priority) applied to a
+> customer-support queue rather than a municipal one. It meets each Track B
+> condition:
+>
+> | Condition | How |
+> |---|---|
+> | A clear decision between 2–3 options | Exactly three, mutually exclusive: `auto_route` / `human_review` / `reject` — not open-ended generation |
+> | Tabular data or short text only | Arabic text, 1–2 000 characters. No images, audio or video |
+> | A lightweight model is enough | scikit-learn: TF-IDF → LogisticRegression, 0.61 MB, trains in 3.3 s |
+> | At least one deterministic behavioural test | An urgency term (`حريق`, `تسرب غاز`) must **always** raise priority to `urgent` and can never produce a rejection — pinned in [`tests/behavioural/test_directional.py`](tests/behavioural/test_directional.py) across every term in the list |
+
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/predict \
   -H 'Content-Type: application/json' -H 'X-API-Key: your-key' \
@@ -40,8 +54,8 @@ You need **Python 3.12+**, and **Docker** for the container path.
 ### Path A — Docker Compose (the service plus its Redis)
 
 ```bash
-git clone https://github.com/shathasultan/custom-ai-model.git
-cd custom-ai-model
+git clone https://github.com/shathasultan/muwajjih.git
+cd muwajjih
 
 cp .env.example .env
 # Edit .env and set INTENT_API_KEYS to any value. The service refuses to
@@ -81,7 +95,7 @@ There is **no `latest` tag**. Images are published to GHCR addressed only by
 commit SHA:
 
 ```bash
-docker pull ghcr.io/shathasultan/custom-ai-model:<commit-sha>
+docker pull ghcr.io/shathasultan/muwajjih:<commit-sha>
 ```
 
 ### Path B — local Python
