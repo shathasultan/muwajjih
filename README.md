@@ -105,7 +105,7 @@ INTENT_API_KEYS=local-dev-key \
 | `make lint` | Ruff, format check, strict mypy, **and the import-linter contract** |
 | `make gate` | **Fast gate** — lint + unit + integration, fails over 60 s |
 | `make test` | Full pyramid with the branch-coverage gate |
-| `make image` | Build the image, fail if it exceeds 500 MB |
+| `make image` | Build the image, fail if it exceeds 500 MB (currently **435 MB**) |
 | `make smoke` | Run the built image and exercise it over real HTTP |
 | `make compose-up` / `make compose-down` | The stack, gated on real health |
 | `make all` | Everything CI runs, in CI's order |
@@ -358,8 +358,8 @@ Stated rather than hidden — each is a real constraint of this build.
 
 - [DECISIONS.md](DECISIONS.md) — five engineering decisions, each with the
   alternative rejected and what it cost
-- [BENCHMARKS.md](BENCHMARKS.md) — real measurements: latency, build, test
-  times, coverage, confidence separation
+- [BENCHMARKS.md](BENCHMARKS.md) — real measurements: 435 MB image, 186×
+  cache speed-up, 14 s fast gate, 96% branch coverage, confidence separation
 - [SECURITY.md](SECURITY.md) — threat model and the controls in place
 - [DOCKER.md](DOCKER.md) — container internals
 

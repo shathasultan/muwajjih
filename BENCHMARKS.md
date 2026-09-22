@@ -5,11 +5,10 @@ in *Environment*. Nothing here is estimated. Re-run the script after any change
 that could plausibly move a figure — a stale benchmarks file is worse than none,
 because it is trusted.
 
-Two rows are marked **PENDING**. They require a Docker daemon with registry
-access, which the environment these were captured in does not have (its egress
-policy blocks Docker Hub blob downloads). `make image` and `make smoke` produce
-them, and CI asserts the budget on every push regardless — see
-*Container* below.
+Container figures come from the GitHub Actions run that produced them, cited by
+run number, because the local environment these were first captured in cannot
+reach Docker Hub. Everything else is local. Both sources are named per section
+so no figure is unattributable.
 
 ## Environment
 
@@ -20,6 +19,7 @@ them, and CI asserts the budget on every push regardless — see
 | scikit-learn | 1.9.1 |
 | CPUs | 4 |
 | Captured | 2026-09-22 |
+| CI runner (container figures) | `ubuntu-latest`, 4 vCPU |
 
 ## Training pipeline
 
@@ -101,12 +101,22 @@ miss, so a Redis outage makes the service slower, never unavailable
 | Behavioural | 94 | 2.3 s |
 | **Full suite with branch coverage** | **201** | **11.3 s** |
 
-| Gate | Measured | Budget |
+| Fast gate | Measured | Budget |
 |---|---|---|
-| **Fast gate** (lint + format + mypy + import-linter + unit + integration) | **6.1 s** | 60 s |
+| Local, model already trained | 6.1 s | 60 s |
+| Local, from a wiped tree (trains first) | 28 s | 60 s |
+| **CI run #6, `ubuntu-latest`** | **14 s** | 60 s |
 
-The fast gate has 10× headroom. That is deliberate: a budget met at 55 s is one
-commit away from failing, and a gate people expect to fail stops being a gate.
+Three numbers because they answer different questions. 6.1 s is what a
+developer waits for on a second run. 28 s is the honest worst case locally —
+no `data/`, no `models/` — and it is the figure the budget should be judged
+against. 14 s is CI, which is faster than the local worst case because the
+runner has more cores for the training step.
+
+Training is inside the measured window, not a setup step before it. The
+integration suite exercises the real artifact, and excluding the seconds that
+produce it would be measuring a gate nobody actually runs.
+
 `make gate` fails if it ever crosses 60 s, and the CI job carries
 `timeout-minutes: 2` as a second line of defence.
 
@@ -136,28 +146,42 @@ bug is a wrong decision shipped to a customer rather than a 500 — are at 100%.
 
 ## Container
 
+Measured in CI run
+[#6](https://github.com/shathasultan/custom-ai-model/actions/runs/35697527948),
+commit `d3179e2`.
+
 | Metric | Value |
 |---|---|
-| Image size | **PENDING** — run `make image` |
-| Cold build | **PENDING** — run `make image` |
+| **Image size** | **435 MB** (budget: 500 MB) |
+| Cold build, no layer cache | 35 s |
+| Time to `/v1/ready` from `docker run` | ~2 s |
+| Full smoke test (6 assertions over HTTP) | 3 s |
+| Compose stack to healthy, gated on Redis | 14 s |
 | Base image | `python:3.12-slim`, multi-stage |
 | Runs as | non-root (`appuser`, uid 1000) |
-| Healthcheck | `GET /v1/ready` |
-| Shutdown | SIGTERM → exit 0/143, asserted by `scripts/smoke.sh` |
+| Shutdown on SIGTERM | **exit 0 in 1 s** |
 
-To fill in the two pending rows:
+435 MB is 87% of the budget, and almost all of it is scipy, numpy and
+scikit-learn. The multi-stage split is what keeps it there: pandas, the
+training code and the dev dependencies all stay in the builder, and only the
+0.61 MB fitted artifact crosses into the runtime stage.
 
-```bash
-make image    # builds, prints the measured size, fails over 500 MB
-make smoke    # runs the image and exercises it over real HTTP
-```
+The budget is enforced independently of this file — the CI `image` job fails
+the build over 500 MB and writes the measured size into the run summary — so
+the number is re-verified on every push whether or not anyone updates this
+table.
 
-The budget is enforced independently of this file: the CI `image` job fails the
-build if the image exceeds 500 MB and writes the measured size into the run
-summary, so the number is verified on every push whether or not anyone updates
-the table.
+### What the smoke test proved
 
-The runtime stage is expected to land well under budget — it carries neither
-pandas nor the training code nor the dev dependencies, only the fitted
-artifact crossing the stage boundary — but "expected" is not a measurement, so
-the row stays PENDING until somebody runs the command.
+Against the real container, over real HTTP — not a TestClient:
+
+1. A valid complaint auto-routed to `quality_assurance` at 0.912 confidence
+2. `في تسرب غاز من السخان` escalated to `priority: urgent` with
+   `urgency_signals: ["تسرب","غاز"]`, despite 0.632 confidence
+3. An unknown field returned 422 inside the envelope, naming `body.txt`
+4. An unauthenticated request returned 401
+5. `id -u` inside the container is not 0
+6. `docker stop` exited 0 in 1 s — no SIGKILL, no dropped requests
+
+Compose brought Redis to `Healthy` **before** starting the API, and
+`/v1/ready` then reported `"cache_backend":"redis"`.
