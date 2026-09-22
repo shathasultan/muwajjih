@@ -304,8 +304,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def on_unhandled_error(request: Request, exc: Exception) -> JSONResponse:
         # The caller never sees the traceback: internals stay in the logs,
         # correlated by the trace id that IS returned.
-        state: AppState = request.app.state.app_state
-        state.metrics.record_error()
+        #
+        # `getattr` rather than a direct attribute read: this handler is the
+        # last line of defence, and an app whose lifespan never ran has no
+        # app_state. Raising HERE would replace a described failure with an
+        # undescribed one, which is the worst possible moment to do it.
+        state = getattr(request.app.state, "app_state", None)
+        if state is not None:
+            state.metrics.record_error()
         logger.exception(
             "unhandled error", extra={"event": "unhandled_error", "trace_id": _trace_id(request)}
         )

@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from intent_service.api.main import API_PREFIX, create_app, load_app_state, warm_up
 from intent_service.config import Settings
+from intent_service.service.triage import TriageService
 
 TEST_KEY = "test-key-abc123"
 AUTH = {"X-API-Key": TEST_KEY}
@@ -304,3 +305,36 @@ def test_warm_up_is_a_no_op_without_a_model(tmp_path: Path) -> None:
     state = load_app_state(_settings(model_path=tmp_path / "absent.joblib"))
     warm_up(state)
     assert state.ready is False
+
+
+# ---------------------------------------------------------------------------
+# The unhandled-error path
+# ---------------------------------------------------------------------------
+
+
+def test_an_unhandled_error_still_returns_the_envelope(monkeypatch) -> None:
+    """The 500 path is the one nobody exercises until it happens in production.
+
+    A custom `@app.middleware("http")` sits between the route and Starlette's
+    error middleware, so "we registered an Exception handler" is not by itself
+    evidence that it runs. This forces a genuine unhandled failure and checks
+    the caller still gets the envelope, a trace id to quote, and no traceback.
+    """
+    app = create_app(_settings())
+    with TestClient(app, raise_server_exceptions=False) as client:
+        state = app.state.app_state
+        # Patched on the class, not the instance: TriageService is a frozen
+        # dataclass, which is the point of it -- a service you cannot mutate at
+        # runtime.
+        monkeypatch.setattr(TriageService, "triage", lambda self, message: 1 / 0)
+        before = state.metrics.snapshot()[2]
+
+        response = client.post(PREDICT, json={"text": "يسبب خطأ"}, headers=AUTH)
+
+        assert response.status_code == 500
+        body = response.json()
+        assert_envelope(body)
+        assert body["error"]["code"] == "internal_error"
+        # Internals stay in the logs; the caller gets a correlation id instead.
+        assert "ZeroDivision" not in response.text
+        assert state.metrics.snapshot()[2] == before + 1
