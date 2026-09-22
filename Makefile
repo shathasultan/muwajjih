@@ -35,8 +35,12 @@ lint: ## Ruff, formatting, strict mypy, YAML, and the architecture contract
 	@python -c "import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]; print('yaml ok')" \
 		.github/workflows/ci.yml docker-compose.yml .pre-commit-config.yaml .github/dependabot.yml
 
-gate: ## FAST gate -- lint + unit + integration, must finish in < 60s
+gate: ## FAST gate -- train + lint + unit + integration, must finish in < 60s
 	@start=$$(date +%s); \
+	if [ ! -f models/intent_model.joblib ]; then \
+		echo "no model artifact; training first"; \
+		$(MAKE) --no-print-directory train >/dev/null; \
+	fi; \
 	$(MAKE) --no-print-directory lint && \
 	pytest tests/unit tests/integration -q --no-header; \
 	rc=$$?; \

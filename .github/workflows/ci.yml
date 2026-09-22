@@ -41,11 +41,17 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,train]"
 
-      - name: Lint, type-check, architecture contract, unit + integration tests
+      - name: Lint, type-check, architecture contract, train, unit + integration
         run: |
           start=$(date +%s)
+          # Training is INSIDE the measured window, not a setup step before it.
+          # The integration suite exercises the real artifact, a fresh runner
+          # has none, and excluding the 3s that produces it would be measuring
+          # a gate nobody actually runs. There is headroom either way.
+          python -m train.generate_dataset
+          python -m train.train_model
           ruff check src tests train scripts
           ruff format --check src tests train scripts
           mypy src
@@ -97,7 +103,19 @@ jobs:
         run: pip install -e ".[dev,train]"
 
       - name: pip-audit (known vulnerabilities in dependencies)
-        run: pip-audit --strict
+        # Audited against a frozen list rather than the live environment.
+        #
+        # `pip-audit --strict` on the environment fails on ANY package it
+        # cannot look up -- including intent-service itself, which is
+        # installed editable and has no PyPI release. `--skip-editable` does
+        # not help: --strict counts a skip as a failure too. Freezing with
+        # --exclude-editable drops exactly one package, our own, and keeps
+        # --strict meaningful for all 70+ third-party dependencies, which is
+        # what this job exists to check.
+        run: |
+          pip freeze --exclude-editable > /tmp/requirements-audit.txt
+          echo "auditing $(wc -l < /tmp/requirements-audit.txt) dependencies"
+          pip-audit --strict -r /tmp/requirements-audit.txt
 
   # ---------------------------------------------------------------------------
   # Stage 3: train the model from source, then run all three test layers with

@@ -1,0 +1,47 @@
+# gitleaks configuration.
+#
+# The default rules are kept in full -- `useDefault = true` -- and this file
+# only adds a narrow allowlist. That direction matters: a scanner tuned by
+# deleting rules stops finding the thing it exists to find, so nothing here
+# disables a rule. Each entry below allows one specific literal that is
+# provably not a credential, and says why.
+#
+# Verify a change to this file with:
+#     gitleaks detect --source . --no-banner
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures, CI throwaway keys, and documentation placeholders"
+
+# Exact values only -- deliberately not a pattern like `.*test.*key.*`, which
+# would hide a real key that happened to contain the word "test".
+regexes = [
+  # Fixture keys used by the unit and integration suites. They authenticate
+  # against a Settings object constructed inside the test, never a deployment.
+  '''test-key-0123456789''',
+  '''test-key-abc123''',
+  # Keys generated inside a CI job for a container that lives for the length
+  # of that job. They are visible in the workflow file on purpose: a secret
+  # would defeat the point, since the smoke test needs to prove that a WRONG
+  # key is rejected and a known one is accepted.
+  '''ci-test-key''',
+  '''ci-smoke-key''',
+  '''ci-compose-key''',
+  '''smoke-test-key''',
+  '''bench-key''',
+  # Literal instructions to the reader in the documentation and the env
+  # template. If any of these ever reaches a running service, it fails to
+  # authenticate -- which is the intended behaviour.
+  '''PASTE-YOUR-KEY-HERE''',
+  '''change-me-to-a-long-random-value''',
+  '''replace-with-a-generated-key''',
+]
+
+# The lockfile of expected decisions contains Arabic message text, some of
+# which scores as high-entropy. It holds no credentials by construction --
+# scripts/regenerate_golden.py writes only decision fields.
+paths = [
+  '''tests/behavioural/golden_decisions\.json''',
+]
