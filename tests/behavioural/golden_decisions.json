@@ -31,7 +31,7 @@
     },
     "الجهاز طلع منه دخان وشرارة والحمدلله ما صار اصابة": {
       "action": "auto_route",
-      "department": "customer_relations",
+      "department": "safety",
       "intent": "praise",
       "priority": "urgent",
       "urgency_signals": [
@@ -62,7 +62,7 @@
     },
     "صار حريق في لوحة الكهرباء بعد ما ركبت الجهاز": {
       "action": "auto_route",
-      "department": "technical_support",
+      "department": "safety",
       "intent": "support_request",
       "priority": "urgent",
       "urgency_signals": [
@@ -71,7 +71,7 @@
     },
     "في تسرب غاز من السخان والرائحة قوية في كل البيت": {
       "action": "auto_route",
-      "department": "technical_support",
+      "department": "safety",
       "intent": "support_request",
       "priority": "urgent",
       "urgency_signals": [
@@ -136,8 +136,8 @@
       "urgency_signals": []
     }
   },
-  "generated_at": "2026-09-22T06:24:50+00:00",
-  "reason": "Initial approved reference: word+char TF-IDF + LogisticRegression (v1.0.0), thresholds auto_route=0.60 / reject=0.25 chosen from the measured confidence gap between real messages (>=0.85) and noise (<=0.34)",
+  "generated_at": "2026-09-22T08:51:16+00:00",
+  "reason": "Escalated messages now route to the safety department instead of the department the model inferred. A gas-leak message scored 0.37 as praise and was sent to customer relations at urgent priority; when the policy overrides the model it now overrides it completely.",
   "reviewed_by": "Shatha Sultan",
   "thresholds": {
     "auto_route_floor": 0.6,

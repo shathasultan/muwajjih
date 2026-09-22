@@ -45,12 +45,17 @@ echo "$body"
 echo "$body" | grep -q '"department":"quality_assurance"' || fail "wrong department"
 echo "$body" | grep -q '"trace_id"' || fail "envelope is missing meta.trace_id"
 
-echo "--> 2. an urgency term escalates priority"
+echo "--> 2. an urgency term escalates priority AND overrides the department"
+# Deliberately praise-shaped wording around an emergency: the classifier reads
+# this as `praise` with low confidence, so it is the case that proves the
+# override is total rather than just a priority bump.
 body=$(curl -sf -X POST "http://127.0.0.1:${PORT}/v1/predict" \
   -H 'Content-Type: application/json' -H "X-API-Key: ${KEY}" \
-  -d '{"text":"في تسرب غاز من السخان وريحة قوية في البيت"}')
+  -d '{"text":"والله خدمتكم ممتازة بس صار حريق وتسرب غاز من السخان"}')
 echo "$body"
 echo "$body" | grep -q '"priority":"urgent"' || fail "urgency was not escalated"
+echo "$body" | grep -q '"department":"safety"' \
+  || fail "escalated message did not reach the safety department"
 
 echo "--> 3. a malformed body is rejected inside the envelope"
 code=$(curl -s -o /tmp/smoke_bad.json -w '%{http_code}' -X POST \
