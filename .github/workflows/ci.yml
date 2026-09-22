@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger. Useful for re-running the pipeline against a branch without
+  # pushing a no-op commit, and as a way back in if an event is ever missed.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same branch: a force-push while CI is running
 # otherwise burns a runner proving something about a commit nobody will merge.
