@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -75,14 +75,27 @@ jobs:
     name: Secret scan (full history)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # gitleaks needs every commit, not a shallow clone
 
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
+      # The binary directly, not gitleaks-action. The action scans only the
+      # commit RANGE of the push that triggered it, which is not what this job
+      # claims to do -- and on the first push to a fresh repository that range
+      # is `<root-commit>^..HEAD`, which git rejects because a root commit has
+      # no parent. `detect --source .` walks every commit instead, so the job
+      # does what its name says and does not depend on how it was triggered.
+      #
+      # Pinned to an exact version: a scanner that silently changes its rule
+      # set between runs makes a green result meaningless.
+      - name: gitleaks (every commit)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.21.2
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --source . --no-banner --redact --verbose
 
   # ---------------------------------------------------------------------------
   # Stage 2: dependency vulnerabilities. Separate from the fast gate because it
@@ -92,7 +105,7 @@ jobs:
     name: Dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -128,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: gate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -184,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build image
         run: docker build -t intent-service:ci .
@@ -237,17 +250,17 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Required before the build below. The runner's default builder uses the
       # `docker` driver, which cannot export a build cache -- `cache-to:
       # type=gha` fails outright against it. This action provisions a
       # `docker-container` driver builder, which can.
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -255,7 +268,7 @@ jobs:
 
       - name: Derive immutable image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -263,7 +276,7 @@ jobs:
             type=raw,value=${{ github.sha }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
