@@ -495,13 +495,6 @@ Stated rather than hidden — each is a real constraint of this build.
 - [SECURITY.md](SECURITY.md) — threat model and the controls in place
 - [DOCKER.md](DOCKER.md) — container internals
 
-## Acknowledgement
-
-This project was completed as part of the **SDA-AIE-113 — Software Engineering
-Practices for AI Systems** training program at **SDAIA Academy**, under the
-supervision of **Abdullah Khalid AlShahrani**.
-
-Official SDAIA Academy GitHub: https://github.com/SDAIAAcademy
 
 ## Licence
 
@@ -516,3 +509,11 @@ examiners of SDA-AIE-113 have a limited, non-transferable right to access,
 run and evaluate this software for the purpose of assessment — so everything
 in this README can be executed by a reviewer without asking permission
 first.
+
+## Acknowledgement
+
+This project was completed as part of the **SDA-AIE-113 — Software Engineering
+Practices for AI Systems** training program at **SDAIA Academy**, under the
+supervision of **Abdullah Khalid AlShahrani**.
+
+Official SDAIA Academy GitHub: https://github.com/SDAIAAcademy
