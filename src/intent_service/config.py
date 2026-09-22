@@ -23,7 +23,22 @@ class Settings(BaseSettings):
 
     # --- model -------------------------------------------------------------
     model_path: Path = Path("models/intent_model.joblib")
-    confidence_floor: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    # --- decision policy ----------------------------------------------------
+    # The automation boundary. Operations tunes these without a code change;
+    # the domain validates their relative order (see PolicyThresholds).
+    auto_route_floor: float = Field(default=0.60, ge=0.0, le=1.0)
+    reject_floor: float = Field(default=0.25, ge=0.0, le=1.0)
+
+    # --- decision cache (extension) -----------------------------------------
+    # Empty means "no Redis": the service falls back to a bounded in-process
+    # cache. Configuring a URL is opt-in, so the default deployment has no
+    # external dependency at all.
+    redis_url: str = ""
+    cache_ttl_seconds: int = Field(default=300, ge=1)
+    # Short by design: a hung cache must never stall a prediction. See
+    # RedisDecisionCache.connect.
+    cache_timeout_seconds: float = Field(default=0.25, gt=0)
 
     # --- service -----------------------------------------------------------
     log_level: str = "INFO"
@@ -57,6 +72,20 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def _reject_inverted_thresholds(self) -> "Settings":
+        """Catch an impossible policy at startup rather than at the first
+        request. With reject_floor above auto_route_floor, the human_review
+        band is empty and the service would silently never ask for a human
+        -- a safety regression that no status code would reveal."""
+        if self.reject_floor > self.auto_route_floor:
+            raise ValueError(
+                f"INTENT_REJECT_FLOOR ({self.reject_floor}) must not exceed "
+                f"INTENT_AUTO_ROUTE_FLOOR ({self.auto_route_floor}); otherwise "
+                "no message could ever be sent to human review."
+            )
+        return self
 
     @model_validator(mode="after")
     def _reject_auth_without_keys(self) -> "Settings":

@@ -4,8 +4,8 @@ in-memory (no need for the full artifact on disk)."""
 import joblib
 import pytest
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.svm import LinearSVC
 
 from intent_service.adapters.sklearn_model import SklearnIntentModel
 
@@ -17,7 +17,11 @@ def _fit_tiny_pipeline() -> Pipeline:
     pipeline = Pipeline(
         [
             ("tfidf", TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 3))),
-            ("clf", LinearSVC(random_state=42)),
+            # Mirrors the real pipeline's classifier family: the adapter calls
+            # predict_proba, so a tiny stand-in that lacks it would pass a test
+            # the production artifact fails. Which is exactly what happened
+            # when this project moved off LinearSVC.
+            ("clf", LogisticRegression(random_state=42)),
         ]
     )
     pipeline.fit(TEXTS, LABELS)
@@ -68,6 +72,19 @@ def test_predict_returns_label_and_bounded_confidence(artifact_path) -> None:
 
     assert label in {"complaint", "praise"}
     assert 0.0 <= confidence <= 1.0
+
+
+def test_confidence_is_the_probability_of_the_returned_label(artifact_path) -> None:
+    """The label and the confidence must describe the same class. Reading one
+    from `predict` and the other from `predict_proba` would let them disagree
+    -- handing the policy a number that belongs to a different label."""
+    model = SklearnIntentModel.load(artifact_path)
+    label, confidence = model.predict("وصل تالف ومكسور")
+
+    probabilities = model._pipeline.predict_proba(["وصل تالف ومكسور"])[0]
+    index = list(model._pipeline.classes_).index(label)
+    assert confidence == pytest.approx(probabilities[index])
+    assert confidence == pytest.approx(max(probabilities))
 
 
 def test_predict_is_deterministic(artifact_path) -> None:

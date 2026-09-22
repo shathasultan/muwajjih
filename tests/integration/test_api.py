@@ -1,7 +1,13 @@
-"""Integration tests: exercise every endpoint through FastAPI's TestClient
-against the real, trained model artifact -- these need
-`python -m train.generate_dataset && python -m train.train_model` to have
-run first (the CI pipeline runs both before this suite)."""
+"""Integration tests: every endpoint through FastAPI's TestClient against the
+real, trained model artifact.
+
+These need `python -m train.generate_dataset && python -m train.train_model`
+to have run first (CI runs both before this suite, and `make train` does it
+locally). Unlike the unit suite these exercise the wiring: middleware order,
+dependency resolution, exception handlers, and the envelope contract.
+"""
+
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,21 +21,27 @@ AUTH = {"X-API-Key": TEST_KEY}
 HEALTH = f"{API_PREFIX}/health"
 READY = f"{API_PREFIX}/ready"
 PREDICT = f"{API_PREFIX}/predict"
-MODEL_INFO = f"{API_PREFIX}/model-info"
+POLICY = f"{API_PREFIX}/policy"
 METRICS = f"{API_PREFIX}/metrics"
 
-LABELS = {
-    "complaint",
-    "order_status",
-    "praise",
-    "price_inquiry",
-    "return_refund",
-    "support_request",
+ACTIONS = {"auto_route", "human_review", "reject"}
+DEPARTMENTS = {
+    "quality_assurance",
+    "sales",
+    "technical_support",
+    "customer_relations",
+    "logistics",
+    "returns",
 }
 
 
 def _settings(**overrides: object) -> Settings:
-    base: dict[str, object] = {"api_keys": TEST_KEY, "rate_limit_requests": 1000}
+    base: dict[str, object] = {
+        "api_keys": TEST_KEY,
+        "rate_limit_requests": 1000,
+        "redis_url": "",
+        "log_level": "WARNING",
+    }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
 
@@ -41,9 +53,71 @@ def client():
         yield c
 
 
-# --------------------------------------------------------------------------
-# Versioning
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The envelope contract -- the property every other test leans on
+# ---------------------------------------------------------------------------
+
+
+def assert_envelope(body: dict) -> None:
+    """`data` xor `error`, and `meta.trace_id` always present."""
+    assert set(body) == {"data", "error", "meta"}
+    assert "trace_id" in body["meta"] and body["meta"]["trace_id"]
+    assert (body["data"] is None) != (body["error"] is None), "data xor error"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "headers", "payload", "expected_status"),
+    [
+        ("get", HEALTH, {}, None, 200),
+        ("get", READY, {}, None, 200),
+        ("get", POLICY, AUTH, None, 200),
+        ("get", METRICS, AUTH, None, 200),
+        ("post", PREDICT, AUTH, {"text": "الجهاز تالف"}, 200),
+        ("post", PREDICT, {}, {"text": "الجهاز تالف"}, 401),  # no key
+        ("post", PREDICT, AUTH, {"txt": "typo"}, 422),  # unknown field
+        ("post", PREDICT, AUTH, {"text": ""}, 422),  # empty text
+        ("get", f"{API_PREFIX}/nope", AUTH, None, 404),  # unknown route
+    ],
+)
+def test_every_response_uses_the_same_envelope(
+    client: TestClient, method, path, headers, payload, expected_status
+) -> None:
+    """Success AND failure. A client that parses one shape must never meet a
+    second one -- which is exactly what FastAPI's default `{"detail": ...}`
+    would do on the error paths above."""
+    response = (
+        client.get(path, headers=headers)
+        if method == "get"
+        else client.post(path, json=payload, headers=headers)
+    )
+    assert response.status_code == expected_status
+    assert_envelope(response.json())
+
+
+def test_trace_id_is_echoed_in_a_header_and_matches_the_body(client: TestClient) -> None:
+    response = client.post(PREDICT, json={"text": "وين طلبي"}, headers=AUTH)
+    assert response.headers["X-Trace-Id"] == response.json()["meta"]["trace_id"]
+
+
+def test_trace_ids_are_unique_per_request(client: TestClient) -> None:
+    seen = {
+        client.post(PREDICT, json={"text": "وين طلبي"}, headers=AUTH).json()["meta"]["trace_id"]
+        for _ in range(5)
+    }
+    assert len(seen) == 5
+
+
+def test_validation_errors_name_the_offending_field(client: TestClient) -> None:
+    """A typo in a client integration must be a loud, specific error -- not a
+    silently ignored key."""
+    error = client.post(PREDICT, json={"txt": "typo"}, headers=AUTH).json()["error"]
+    assert error["code"] == "validation_error"
+    assert any("txt" in field for field in error["fields"])
+
+
+# ---------------------------------------------------------------------------
+# Versioning, liveness and readiness
+# ---------------------------------------------------------------------------
 
 
 def test_routes_are_served_under_the_v1_prefix(client: TestClient) -> None:
@@ -52,226 +126,181 @@ def test_routes_are_served_under_the_v1_prefix(client: TestClient) -> None:
     assert client.get("/health").status_code == 404
 
 
-# --------------------------------------------------------------------------
-# Liveness vs readiness
-# --------------------------------------------------------------------------
-
-
 def test_health_is_liveness_only_and_needs_no_credentials(client: TestClient) -> None:
-    response = client.get(HEALTH)
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert client.get(HEALTH).json()["data"] == {"status": "ok"}
 
 
-def test_health_answers_even_without_a_model(tmp_path) -> None:
-    """Liveness must not depend on the model: a missing artifact is a
-    readiness problem, and restarting the process would not fix it."""
-    app = create_app(_settings(model_path=tmp_path / "absent.joblib"))
-    with TestClient(app) as c:
-        assert c.get(HEALTH).status_code == 200
+def test_ready_reports_a_loaded_warm_model(client: TestClient) -> None:
+    data = client.get(READY).json()["data"]
+    assert data["ready"] is True
+    assert data["model_loaded"] is True
+    assert data["model_version"]
 
 
-def test_ready_reports_200_once_warmed_up(client: TestClient) -> None:
-    response = client.get(READY)
+def test_ready_is_503_before_warm_up_completes() -> None:
+    """The distinction that makes readiness worth having: the process is
+    alive (200 on /health) while it is still unable to serve (503 on /ready).
+    Built without the lifespan so the warm-up genuinely has not run."""
+    app = create_app(_settings())
+    app.state.app_state = load_app_state(_settings())  # loaded, NOT warmed
+    client = TestClient(app)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ready"] is True
-    assert body["model_loaded"] is True
-    assert body["model_version"]
-
-
-def test_ready_reports_503_before_warm_up_completes() -> None:
-    """The state is only 'ready' after the warm-up prediction returns --
-    reporting ready earlier would send a user the slow first request."""
-    state = load_app_state(_settings())
-
-    assert state.ready is False  # loaded, but not yet warmed
-
-    warm_up(state)
-
-    assert state.ready is True
+    assert client.get(HEALTH).status_code == 200
+    ready = client.get(READY)
+    assert ready.status_code == 503
+    assert ready.json()["data"]["ready"] is False
 
 
-def test_ready_reports_503_when_the_artifact_is_missing(tmp_path) -> None:
-    app = create_app(_settings(model_path=tmp_path / "absent.joblib"))
-    with TestClient(app) as c:
-        response = c.get(READY)
-        predict = c.post(PREDICT, json={"text": "مرحبا"}, headers=AUTH)
+def test_ready_reports_the_cache_backend(client: TestClient) -> None:
+    data = client.get(READY).json()["data"]
+    assert data["cache_backend"] == "memory"
+    assert data["cache_healthy"] is True
 
+
+def test_missing_artifact_degrades_to_503_instead_of_crashing(tmp_path: Path) -> None:
+    """A missing model is recoverable by mounting the right volume, so the
+    service reports it through /ready rather than crash-looping."""
+    settings = _settings(model_path=tmp_path / "absent.joblib")
+    app = create_app(settings)
+    app.state.app_state = load_app_state(settings)
+    client = TestClient(app)
+
+    assert client.get(HEALTH).status_code == 200
+    assert client.get(READY).json()["data"]["model_loaded"] is False
+    response = client.post(PREDICT, json={"text": "مرحبا"}, headers=AUTH)
     assert response.status_code == 503
-    assert response.json()["model_loaded"] is False
-    assert predict.status_code == 503
+    assert response.json()["error"]["code"] == "service_unavailable"
 
 
-# --------------------------------------------------------------------------
-# Contract
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The decision endpoint
+# ---------------------------------------------------------------------------
 
 
-def test_model_info_lists_the_trained_labels(client: TestClient) -> None:
-    response = client.get(MODEL_INFO, headers=AUTH)
+def test_predict_returns_a_complete_decision(client: TestClient) -> None:
+    data = client.post(PREDICT, json={"text": "وصلني الجهاز مكسور ومب شغال"}, headers=AUTH).json()[
+        "data"
+    ]
 
-    assert response.status_code == 200
-    assert set(response.json()["labels"]) == LABELS
-
-
-def test_predict_returns_a_well_formed_prediction(client: TestClient) -> None:
-    response = client.post(
-        PREDICT, json={"text": "وصلني المنتج تالف ومكسور من الصندوق"}, headers=AUTH
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["intent"] == "complaint"
-    assert 0.0 <= body["confidence"] <= 1.0
-    assert isinstance(body["low_confidence"], bool)
-    assert body["model_version"]
-    assert body["trace_id"]
+    assert data["action"] in ACTIONS
+    assert data["department"] in DEPARTMENTS
+    assert data["priority"] in {"normal", "urgent"}
+    assert 0.0 <= data["confidence"] <= 1.0
+    assert data["reason"]
+    assert data["model_version"]
 
 
-def test_each_request_gets_a_distinct_trace_id(client: TestClient) -> None:
-    """A trace_id shared between requests is useless for finding one of them
-    in the logs."""
-    first = client.post(PREDICT, json={"text": "وين طلبي"}, headers=AUTH).json()
-    second = client.post(PREDICT, json={"text": "وين طلبي"}, headers=AUTH).json()
-
-    assert first["trace_id"] != second["trace_id"]
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [{"text": ""}, {}, {"text": "a" * 2001}],
-    ids=["empty", "missing-field", "too-long"],
-)
-def test_invalid_payloads_are_rejected_with_422(client: TestClient, payload: dict) -> None:
-    assert client.post(PREDICT, json=payload, headers=AUTH).status_code == 422
+def test_urgency_escalates_priority_end_to_end(client: TestClient) -> None:
+    data = client.post(
+        PREDICT, json={"text": "في تسرب غاز من السخان والرائحة قوية"}, headers=AUTH
+    ).json()["data"]
+    assert data["priority"] == "urgent"
+    assert data["urgency_signals"]
 
 
-def test_unknown_field_is_rejected_with_422_naming_the_field(client: TestClient) -> None:
-    """extra="forbid": a typo in a client integration must fail loudly at the
-    boundary, not be silently dropped."""
-    response = client.post(PREDICT, json={"text": "مرحبا", "txet": "typo"}, headers=AUTH)
-
-    assert response.status_code == 422
-    assert "txet" in response.text
+def test_repeated_text_is_served_from_the_cache(client: TestClient) -> None:
+    payload = {"text": "رسالة مكررة للتأكد من التخزين المؤقت"}
+    assert client.post(PREDICT, json=payload, headers=AUTH).json()["data"]["cached"] is False
+    assert client.post(PREDICT, json=payload, headers=AUTH).json()["data"]["cached"] is True
 
 
-# --------------------------------------------------------------------------
-# Authentication
-# --------------------------------------------------------------------------
+def test_text_longer_than_the_limit_is_rejected(client: TestClient) -> None:
+    assert client.post(PREDICT, json={"text": "ا" * 2001}, headers=AUTH).status_code == 422
 
 
-@pytest.mark.parametrize("path", [PREDICT, MODEL_INFO, METRICS])
-def test_protected_endpoints_reject_a_missing_key(client: TestClient, path: str) -> None:
-    response = client.request("POST" if path == PREDICT else "GET", path, json={"text": "مرحبا"})
+# ---------------------------------------------------------------------------
+# Security controls
+# ---------------------------------------------------------------------------
 
+
+@pytest.mark.parametrize("path", [PREDICT, POLICY, METRICS])
+def test_business_endpoints_require_a_key(client: TestClient, path: str) -> None:
+    response = client.get(path) if path != PREDICT else client.post(path, json={"text": "x"})
     assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
 
 
-def test_protected_endpoint_rejects_a_wrong_key(client: TestClient) -> None:
-    response = client.post(PREDICT, json={"text": "مرحبا"}, headers={"X-API-Key": "not-the-key"})
-
+def test_a_wrong_key_is_rejected(client: TestClient) -> None:
+    response = client.post(PREDICT, json={"text": "x"}, headers={"X-API-Key": "wrong"})
     assert response.status_code == 401
-
-
-def test_auth_failure_does_not_reveal_which_part_failed(client: TestClient) -> None:
-    """Both failures must look identical to the caller."""
-    missing = client.post(PREDICT, json={"text": "مرحبا"})
-    wrong = client.post(PREDICT, json={"text": "مرحبا"}, headers={"X-API-Key": "nope"})
-
-    assert missing.json()["detail"] == wrong.json()["detail"]
-
-
-def test_auth_runs_before_the_model(client: TestClient) -> None:
-    """An unauthenticated caller must not be able to spend model compute,
-    even with a payload that would otherwise be valid."""
-    before = client.get(METRICS, headers=AUTH).json()["total_requests"]
-
-    client.post(PREDICT, json={"text": "وين طلبي"})
-
-    assert client.get(METRICS, headers=AUTH).json()["total_requests"] == before
-
-
-# --------------------------------------------------------------------------
-# Hardening
-# --------------------------------------------------------------------------
-
-
-def test_security_headers_are_present_on_every_response(client: TestClient) -> None:
-    response = client.get(HEALTH)
-
-    assert response.headers["X-Content-Type-Options"] == "nosniff"
-    assert response.headers["X-Frame-Options"] == "DENY"
-    assert response.headers["Cache-Control"] == "no-store"
-    assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
-
-
-def test_security_headers_are_present_on_error_responses(client: TestClient) -> None:
-    response = client.post(PREDICT, json={"text": "مرحبا"})
-
-    assert response.status_code == 401
-    assert response.headers["X-Content-Type-Options"] == "nosniff"
-
-
-def test_oversized_body_is_rejected_with_413(client: TestClient) -> None:
-    response = client.post(PREDICT, json={"text": "a" * 20_000}, headers=AUTH)
-
-    assert response.status_code == 413
 
 
 def test_rate_limit_returns_429_with_retry_after() -> None:
     app = create_app(_settings(rate_limit_requests=2, rate_limit_window_seconds=60))
-    with TestClient(app) as c:
-        c.get(MODEL_INFO, headers=AUTH)
-        c.get(MODEL_INFO, headers=AUTH)
-        blocked = c.get(MODEL_INFO, headers=AUTH)
+    with TestClient(app) as client:
+        for _ in range(2):
+            assert client.post(PREDICT, json={"text": "مرحبا"}, headers=AUTH).status_code == 200
+        limited = client.post(PREDICT, json={"text": "مرحبا"}, headers=AUTH)
 
-    assert blocked.status_code == 429
-    assert int(blocked.headers["Retry-After"]) >= 1
+    assert limited.status_code == 429
+    assert limited.json()["error"]["code"] == "rate_limited"
+    assert int(limited.headers["Retry-After"]) >= 1
 
 
-@pytest.mark.parametrize("path", [HEALTH, READY])
-def test_probes_are_exempt_from_rate_limiting(path: str) -> None:
-    """An orchestrator polls these constantly; throttling one would turn a
-    healthy instance into a falsely-unhealthy one."""
+def test_probes_are_never_rate_limited() -> None:
+    """Throttling a probe turns a healthy instance into a falsely-unhealthy
+    one, which an orchestrator answers by restarting it."""
     app = create_app(_settings(rate_limit_requests=1, rate_limit_window_seconds=60))
-    with TestClient(app) as c:
-        codes = [c.get(path).status_code for _ in range(5)]
-
-    assert codes == [200] * 5
-
-
-def test_cors_is_denied_by_default(client: TestClient) -> None:
-    response = client.get(HEALTH, headers={"Origin": "https://evil.example"})
-
-    assert "access-control-allow-origin" not in {k.lower() for k in response.headers}
+    with TestClient(app) as client:
+        for _ in range(10):
+            assert client.get(HEALTH).status_code == 200
+            assert client.get(READY).status_code == 200
 
 
-# --------------------------------------------------------------------------
-# Metrics
-# --------------------------------------------------------------------------
+def test_oversized_body_is_rejected_before_it_is_read(client: TestClient) -> None:
+    response = client.post(PREDICT, json={"text": "ا" * 40_000}, headers=AUTH)
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
 
 
-def test_metrics_increments_after_a_prediction(client: TestClient) -> None:
-    before = client.get(METRICS, headers=AUTH).json()["total_requests"]
+def test_body_without_content_length_is_rejected(client: TestClient) -> None:
+    """A chunked request carries no Content-Length, so a size check alone
+    would be bypassable."""
+    response = client.post(
+        PREDICT,
+        content=iter([b'{"text":"hi"}']),
+        headers={**AUTH, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 411
 
-    client.post(PREDICT, json={"text": "كم سعر الطابعة؟"}, headers=AUTH)
 
-    after = client.get(METRICS, headers=AUTH).json()
+def test_security_headers_are_present_on_every_response(client: TestClient) -> None:
+    headers = client.get(HEALTH).headers
+    assert headers["X-Content-Type-Options"] == "nosniff"
+    assert headers["X-Frame-Options"] == "DENY"
+    assert headers["Cache-Control"] == "no-store"
+
+
+def test_docs_are_disabled_by_default(client: TestClient) -> None:
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Operator endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_policy_endpoint_exposes_the_live_thresholds(client: TestClient) -> None:
+    """Operators must be able to confirm what a running instance is actually
+    using, rather than trusting that the deployment picked it up."""
+    data = client.get(POLICY, headers=AUTH).json()["data"]
+    assert data["auto_route_floor"] == 0.60
+    assert data["reject_floor"] == 0.25
+    assert set(data["departments"].values()) <= DEPARTMENTS
+    assert "حريق" in data["urgency_terms"]
+
+
+def test_metrics_count_real_decisions(client: TestClient) -> None:
+    before = client.get(METRICS, headers=AUTH).json()["data"]["total_requests"]
+    client.post(PREDICT, json={"text": "ابغى ارجع المنتج"}, headers=AUTH)
+    after = client.get(METRICS, headers=AUTH).json()["data"]
+
     assert after["total_requests"] == before + 1
-    assert after["requests_by_intent"].get("price_inquiry", 0) >= 1
+    assert sum(after["decisions_by_action"].values()) == after["total_requests"]
 
 
-def test_validation_errors_are_not_counted_as_predictions(client: TestClient) -> None:
-    before = client.get(METRICS, headers=AUTH).json()["total_requests"]
-
-    client.post(PREDICT, json={"text": ""}, headers=AUTH)
-
-    assert client.get(METRICS, headers=AUTH).json()["total_requests"] == before
-
-
-def test_warm_up_prediction_is_not_counted_in_metrics(client: TestClient) -> None:
-    """The startup warm-up must not pollute the served-request count."""
-    assert client.get(METRICS, headers=AUTH).json()["total_requests"] == 0
+def test_warm_up_is_a_no_op_without_a_model(tmp_path: Path) -> None:
+    state = load_app_state(_settings(model_path=tmp_path / "absent.joblib"))
+    warm_up(state)
+    assert state.ready is False

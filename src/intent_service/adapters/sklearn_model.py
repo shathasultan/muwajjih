@@ -53,17 +53,19 @@ class SklearnIntentModel:
         return cls(pipeline, version, labels)
 
     def predict(self, text: str) -> tuple[str, float]:
-        label = str(self._pipeline.predict([text])[0])
+        """Return (label, calibrated_probability).
 
-        # LinearSVC has no predict_proba; decision_function's margins are
-        # converted to a pseudo-confidence via softmax so the API always has
-        # a bounded [0, 1] number, without silently pretending the model is
-        # calibrated probability output.
-        scores = self._pipeline.decision_function([text])[0]
-        confidence = _softmax_max(scores)
-        return label, confidence
+        One `predict_proba` call, with the label read off the argmax, rather
+        than calling `predict` and `predict_proba` separately: two calls would
+        run feature extraction twice, and -- worse -- could in principle
+        disagree, handing the policy a confidence that belongs to a different
+        label than the one being returned.
 
-
-def _softmax_max(scores: npt.NDArray[np.float64]) -> float:
-    exp = np.exp(scores - np.max(scores))
-    return float(np.max(exp / exp.sum()))
+        The probability is a real one (see train/train_model.py on why the
+        classifier is LogisticRegression), which is what makes the policy's
+        thresholds interpretable rather than arbitrary.
+        """
+        probabilities: npt.NDArray[np.float64] = self._pipeline.predict_proba([text])[0]
+        index = int(np.argmax(probabilities))
+        label = str(self._pipeline.classes_[index])
+        return label, float(probabilities[index])

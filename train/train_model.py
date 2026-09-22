@@ -1,10 +1,27 @@
 """Train the intent classifier from scratch and export it as a versioned
 joblib artifact.
 
-Pipeline: character n-gram TF-IDF (robust to Arabic's rich morphology and
-to the lack of whitespace-clean tokenization) -> LinearSVC. Both the
-vectorizer and the classifier are fit here, together, as a single sklearn
-Pipeline, so the artifact is self-contained: the serving adapter never
+Pipeline: a union of word n-grams and character n-grams -> LogisticRegression.
+
+Two decisions worth stating, both documented at length in DECISIONS.md.
+
+FEATURES. Character n-grams alone (the obvious choice for Arabic, given its
+rich morphology and the prefixes/suffixes that glue onto a stem) turned out to
+over-fit the generator's templates: the model learned sentence skeletons and
+missed content words, scoring 100% on its own test split while misrouting real
+phrasing. Word n-grams alone miss the morphology. The union gets both: word
+features carry the meaning, char features carry the robustness to spelling.
+
+CLASSIFIER. LogisticRegression rather than LinearSVC, because the decision
+policy thresholds on confidence. LinearSVC exposes only `decision_function`
+margins, which have to be squashed through a softmax to fake a probability --
+producing numbers that are monotonic but meaningless in absolute terms, so a
+threshold like 0.45 has no defensible interpretation. LogisticRegression is
+fit by maximising likelihood, so `predict_proba` is a calibrated probability
+and the policy's thresholds mean what they say.
+
+Both the vectorizer and the classifier are fit here, together, as a single
+sklearn Pipeline, so the artifact is self-contained: the serving adapter never
 re-implements feature extraction.
 
 Usage (from the project root, after `python -m train.generate_dataset`):
@@ -23,9 +40,9 @@ from pathlib import Path
 import joblib
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report
-from sklearn.pipeline import Pipeline
-from sklearn.svm import LinearSVC
+from sklearn.pipeline import FeatureUnion, Pipeline
 
 from train.generate_dataset import LABELS
 
@@ -45,15 +62,46 @@ def build_pipeline() -> Pipeline:
     return Pipeline(
         [
             (
-                "tfidf",
-                TfidfVectorizer(
-                    analyzer="char_wb",
-                    ngram_range=(2, 4),
-                    min_df=2,
-                    sublinear_tf=True,
+                "features",
+                FeatureUnion(
+                    [
+                        # Content words: what the message is actually about.
+                        (
+                            "word",
+                            TfidfVectorizer(
+                                analyzer="word",
+                                ngram_range=(1, 2),
+                                min_df=2,
+                                sublinear_tf=True,
+                            ),
+                        ),
+                        # Sub-word shapes: survives the prefixes and suffixes
+                        # Arabic glues onto a stem (ال-, و-, -ها, -كم), and
+                        # absorbs the spelling variation of dialect writing.
+                        (
+                            "char",
+                            TfidfVectorizer(
+                                analyzer="char_wb",
+                                ngram_range=(3, 5),
+                                min_df=2,
+                                sublinear_tf=True,
+                            ),
+                        ),
+                    ]
                 ),
             ),
-            ("clf", LinearSVC(C=1.0, random_state=42)),
+            (
+                "clf",
+                LogisticRegression(
+                    C=4.0,
+                    max_iter=2000,
+                    # Explicit, even though the dataset is balanced by
+                    # construction: if a future label is under-represented,
+                    # this keeps it from being quietly ignored.
+                    class_weight="balanced",
+                    random_state=42,
+                ),
+            ),
         ]
     )
 

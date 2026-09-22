@@ -1,0 +1,69 @@
+# Architectural contract, enforced by a tool rather than by reviewer memory.
+#
+# Every rule below is a claim the README makes about this codebase. Written
+# down here, a violation fails CI on the pull request that introduces it --
+# which is the only version of "we follow clean architecture" that survives
+# contact with a deadline.
+#
+# Run with: lint-imports  (or `make lint`)
+
+[importlinter]
+root_package = intent_service
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Clean architecture: dependencies point inward only
+type = layers
+layers =
+    intent_service.api
+    intent_service.adapters
+    intent_service.service
+    intent_service.domain
+
+[importlinter:contract:domain-purity]
+name = The domain layer knows nothing about frameworks, ML, or I/O
+type = forbidden
+source_modules =
+    intent_service.domain
+forbidden_modules =
+    fastapi
+    starlette
+    sklearn
+    joblib
+    numpy
+    pandas
+    redis
+    pydantic_settings
+
+[importlinter:contract:service-purity]
+name = The service layer depends on ports, never on concrete adapters
+type = forbidden
+source_modules =
+    intent_service.service
+forbidden_modules =
+    fastapi
+    starlette
+    sklearn
+    joblib
+    redis
+    intent_service.adapters
+    intent_service.config
+
+[importlinter:contract:adapter-isolation]
+name = Only the adapter layer may import sklearn, joblib or redis
+type = forbidden
+source_modules =
+    intent_service.api
+    intent_service.domain
+    intent_service.service
+forbidden_modules =
+    sklearn
+    joblib
+    redis
+ignore_imports =
+    # The composition root is the one place allowed to name concrete
+    # implementations -- that is what a composition root IS. It imports the
+    # adapter MODULES (permitted by the layers contract above); this ignore
+    # only covers the transitive reach into the libraries those adapters wrap.
+    intent_service.api.main -> intent_service.adapters.sklearn_model
+    intent_service.api.main -> intent_service.adapters.redis_cache

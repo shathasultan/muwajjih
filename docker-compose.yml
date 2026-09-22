@@ -1,9 +1,39 @@
+# The service alongside its supporting service, gated on REAL health.
+#
+# `depends_on: condition: service_healthy` is the point of this file. The
+# default (`depends_on: [redis]`) only waits for the container to be created,
+# which is not the same as Redis being able to answer -- so the API would
+# start, fail its first few cache calls, and log errors that look like bugs.
+# Waiting on the healthcheck removes that entire class of startup flake.
+
 services:
+  redis:
+    image: redis:7.4-alpine
+    # Pinned to a minor version, never `latest`: `latest` makes the stack
+    # un-reproducible and silently changes under you between deploys.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    # Persistence is off on purpose. This Redis holds a cache and nothing
+    # else; writing it to disk would buy durability for data we are happy to
+    # lose, at the cost of fsync latency on the request path. `allkeys-lru`
+    # plus a hard memory cap means it degrades by evicting, never by OOM.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
   api:
     build:
       context: .
       dockerfile: Dockerfile
     image: intent-service:local
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
     environment:
@@ -11,16 +41,23 @@ services:
       # without a key, so there is no accidental open deployment.
       INTENT_API_KEYS: ${INTENT_API_KEYS:?set INTENT_API_KEYS in your .env file}
       INTENT_REQUIRE_API_KEY: "true"
+      INTENT_REDIS_URL: redis://redis:6379/0
+      INTENT_CACHE_TTL_SECONDS: "300"
+      INTENT_AUTO_ROUTE_FLOOR: "0.60"
+      INTENT_REJECT_FLOOR: "0.25"
       INTENT_RATE_LIMIT_REQUESTS: "60"
       INTENT_RATE_LIMIT_WINDOW_SECONDS: "60"
       INTENT_CORS_ORIGINS: ""
       INTENT_LOG_LEVEL: INFO
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/v1/ready', timeout=3)"]
-      interval: 30s
+      interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 15s
+    # Give uvicorn room to finish in-flight requests on SIGTERM before the
+    # daemon escalates to SIGKILL.
+    stop_grace_period: 20s
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
