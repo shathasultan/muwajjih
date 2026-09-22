@@ -25,11 +25,15 @@ train: ## Regenerate the dataset (seeded) and retrain the model
 	python -m train.generate_dataset
 	python -m train.train_model
 
-lint: ## Ruff, formatting, strict mypy, and the architecture contract
+lint: ## Ruff, formatting, strict mypy, YAML, and the architecture contract
 	ruff check src tests train scripts
 	ruff format --check src tests train scripts
 	mypy src
 	lint-imports
+	@# A malformed workflow file cannot be caught by the workflow itself -- the
+	@# run fails at startup with zero jobs and no usable error. Parse it here.
+	@python -c "import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]; print('yaml ok')" \
+		.github/workflows/ci.yml docker-compose.yml .pre-commit-config.yaml .github/dependabot.yml
 
 gate: ## FAST gate -- lint + unit + integration, must finish in < 60s
 	@start=$$(date +%s); \

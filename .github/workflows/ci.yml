@@ -47,6 +47,9 @@ jobs:
           ruff format --check src tests train scripts
           mypy src
           lint-imports
+          python -c "import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]" \
+            .github/workflows/ci.yml docker-compose.yml \
+            .pre-commit-config.yaml .github/dependabot.yml
           pytest tests/unit tests/integration -q --no-header
           elapsed=$(( $(date +%s) - start ))
           echo "fast gate finished in ${elapsed}s (budget: 60s)"
@@ -191,7 +194,8 @@ jobs:
           docker compose down -v
 
       - name: Record the measured size in the job summary
-        run: echo "Image size: **${IMAGE_SIZE_MB} MB** / 500 MB budget" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Image size: **${IMAGE_SIZE_MB} MB** / 500 MB budget" >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # Stage 5: publish. Only for pushes to main that passed every gate above -- a
