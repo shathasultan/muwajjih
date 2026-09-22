@@ -505,4 +505,14 @@ Official SDAIA Academy GitHub: https://github.com/SDAIAAcademy
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+**Proprietary — all rights reserved.** See [LICENSE](LICENSE).
+
+This repository is coursework, and the licence is written for that: no general
+permission to use, copy, modify or redistribute is granted, and the code is
+public so that it can be read and assessed, not reused.
+
+The licence does carry one explicit grant. Instructors and authorised
+examiners of SDA-AIE-113 have a limited, non-transferable right to access,
+run and evaluate this software for the purpose of assessment — so everything
+in this README can be executed by a reviewer without asking permission
+first.
