@@ -74,11 +74,20 @@ curl -X POST http://127.0.0.1:8000/v1/predict \
 Expected:
 
 ```json
-{"ready":true,"model_loaded":true,"model_version":"v1.0.0"}
-{"intent":"complaint","confidence":0.23,"low_confidence":false,"model_version":"v1.0.0"}
+{"data":{"ready":true,"model_loaded":true,"model_version":"v1.0.0",
+         "cache_backend":"redis","cache_healthy":true},
+ "error":null,"meta":{"trace_id":"..."}}
+
+{"data":{"action":"auto_route","department":"quality_assurance",
+         "priority":"normal","intent":"complaint","confidence":0.974,
+         "urgency_signals":[],"reason":"confident_classification: ...",
+         "model_version":"v1.0.0","cached":false},
+ "error":null,"meta":{"trace_id":"..."}}
 ```
 
-Interactive docs: open <http://127.0.0.1:8000/docs> in a browser.
+Interactive docs are **off by default** (they enumerate every endpoint and
+schema). Set `INTENT_ENABLE_DOCS=true` and open
+<http://127.0.0.1:8000/docs>.
 
 ## 5. Stop it
 
