@@ -1,325 +1,368 @@
-# Intent Service — Arabic Customer-Message Classifier
+# Muwajjih — Arabic customer-message triage
 
-A production-shaped ML service: a text classifier trained from scratch on a
-reproducible synthetic dataset, wrapped in a clean-architecture package,
-served over a REST API, containerised, and gated by automated tests and CI.
+A production-shaped ML service that makes an **operational decision**, not a
+prediction. It reads an Arabic customer message and decides one of three
+things: route it automatically, send it to a human, or return it to the sender.
 
 Built as the capstone for **SDA-AIE-113 — Software Engineering Practices for
 AI Systems**.
 
----
-
-## What it does
-
-Classifies an Arabic customer-support message into one of six intents:
-
-| Intent | Meaning |
-|---|---|
-| `complaint` | شكوى عن منتج تالف أو خدمة سيئة |
-| `price_inquiry` | سؤال عن السعر أو الخصم أو التقسيط |
-| `support_request` | طلب مساعدة تقنية في استخدام المنتج |
-| `praise` | ثناء على المنتج أو الخدمة |
-| `order_status` | سؤال عن حالة الطلب أو موعد التوصيل |
-| `return_refund` | طلب إرجاع أو استبدال أو استرداد مبلغ |
-
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/predict \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: your-key' \
+  -H 'Content-Type: application/json' -H 'X-API-Key: your-key' \
   -d '{"text":"وصلني الجهاز مكسور ومب شغال"}'
 ```
+
 ```json
-{"intent":"complaint","confidence":0.31,"low_confidence":false,
- "model_version":"v1.0.0","trace_id":"4398c99b-54ef-4735-9217-2614b20dae8a"}
+{
+  "data": {
+    "action": "auto_route",
+    "department": "quality_assurance",
+    "priority": "normal",
+    "intent": "complaint",
+    "confidence": 0.974,
+    "urgency_signals": [],
+    "reason": "confident_classification: confidence 0.974 >= auto_route_floor 0.600",
+    "model_version": "v1.0.0",
+    "cached": false
+  },
+  "error": null,
+  "meta": { "trace_id": "4398c99b-54ef-4735-9217-2614b20dae8a" }
+}
 ```
 
 ---
 
-## Quick start
+## Run it in under 10 minutes
+
+You need **Python 3.12+**, and **Docker** for the container path.
+
+### Path A — Docker Compose (the service plus its Redis)
+
+```bash
+git clone https://github.com/shathasultan/custom-ai-model.git
+cd custom-ai-model
+
+cp .env.example .env
+# Edit .env and set INTENT_API_KEYS to any value. The service refuses to
+# start without one, so there is no accidental open deployment.
+
+make compose-up      # waits on REAL health, not just "container created"
+```
+
+Then:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/ready | jq
+# {"data":{"ready":true,"model_loaded":true,"cache_backend":"redis", ...}}
+
+KEY=$(grep INTENT_API_KEYS .env | cut -d= -f2)
+
+# A valid request
+curl -s -X POST http://127.0.0.1:8000/v1/predict \
+  -H 'Content-Type: application/json' -H "X-API-Key: $KEY" \
+  -d '{"text":"وين طلبي؟ صار له اسبوع وما وصل"}' | jq
+
+# An emergency — escalated regardless of what the model thinks
+curl -s -X POST http://127.0.0.1:8000/v1/predict \
+  -H 'Content-Type: application/json' -H "X-API-Key: $KEY" \
+  -d '{"text":"في تسرب غاز من السخان والرائحة قوية"}' | jq '.data.priority'
+# "urgent"
+
+# A malformed request — same envelope, trace id still present
+curl -s -X POST http://127.0.0.1:8000/v1/predict \
+  -H 'Content-Type: application/json' -H "X-API-Key: $KEY" \
+  -d '{"txt":"unknown field"}' | jq
+
+make compose-down
+```
+
+There is **no `latest` tag**. Images are published to GHCR addressed only by
+commit SHA:
+
+```bash
+docker pull ghcr.io/shathasultan/custom-ai-model:<commit-sha>
+```
+
+### Path B — local Python
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,train]"
+make install        # editable install + dev/train extras + pre-commit hooks
+make train          # generate the seeded dataset, then fit the model (~4s)
+make gate           # lint, types, architecture contract, unit + integration
 
-python -m train.generate_dataset   # deterministic, seed=42
-python -m train.train_model        # writes models/intent_model.joblib
-
-cp .env.example .env               # then set INTENT_API_KEYS in .env
-pytest                             # 71 tests
-uvicorn intent_service.api.main:create_app --factory --reload
+INTENT_API_KEYS=local-dev-key \
+  uvicorn intent_service.api.main:create_app --factory --reload
 ```
 
-With Docker (full macOS walkthrough in [DOCKER.md](DOCKER.md)):
+### Every command
 
-```bash
-docker build -t intent-service:local .
-docker run -p 8000:8000 -e INTENT_API_KEYS="your-key" intent-service:local
-# or, reading .env automatically:
-docker compose up --build
-```
+| Command | What it does |
+|---|---|
+| `make install` | Editable install with dev + train extras, installs pre-commit |
+| `make train` | Regenerate the seeded dataset and retrain (~3.4 s) |
+| `make lint` | Ruff, format check, strict mypy, **and the import-linter contract** |
+| `make gate` | **Fast gate** — lint + unit + integration, fails over 60 s |
+| `make test` | Full pyramid with the branch-coverage gate |
+| `make image` | Build the image, fail if it exceeds 500 MB |
+| `make smoke` | Run the built image and exercise it over real HTTP |
+| `make compose-up` / `make compose-down` | The stack, gated on real health |
+| `make all` | Everything CI runs, in CI's order |
 
 ---
 
-## How this project meets each programme objective
+## What it decides
 
-| # | Objective | Where it lives |
+Six intents, each owned by a department:
+
+| Intent | Department | Meaning |
 |---|---|---|
-| 1 | RESTful APIs serving ML models as reliable services | `src/intent_service/api/` — four endpoints, pydantic-validated contracts, correct status codes (200/401/413/422/429/500/503), API-key auth, rate limiting, graceful degradation when the artifact is missing |
-| 2 | Containerised AI services with Docker and Compose | `Dockerfile` (two-stage: trains in the builder, ships only runtime deps), `docker-compose.yml` (healthcheck, restart policy, env-based config) |
-| 3 | Automated unit, integration, and model-behaviour tests | `tests/unit/` (no model loaded), `tests/integration/` (real API via TestClient), `tests/behavioural/` (model quality gates) |
-| 4 | CI/CD pipelines that verify and deploy AI code changes | `.github/workflows/ci.yml` — three dependent stages: quality → train & test → build image & smoke-test a live container |
-| 5 | Clean architecture and configuration management | `domain/` → `service/` → `adapters/` → `api/`, dependencies pointing inward only; one typed `Settings` object (`config.py`) |
-| 6 | Code quality via reviews, linters, static analysis | `ruff` (lint + format), `mypy --strict`, `.pre-commit-config.yaml`, `.github/pull_request_template.md` with an architecture-specific review checklist |
-| 7 | A containerised model service capstone | This repository |
+| `complaint` | `quality_assurance` | شكوى عن منتج تالف أو خدمة سيئة |
+| `price_inquiry` | `sales` | سؤال عن السعر أو الخصم أو التقسيط |
+| `support_request` | `technical_support` | طلب مساعدة تقنية |
+| `praise` | `customer_relations` | ثناء على المنتج أو الخدمة |
+| `order_status` | `logistics` | سؤال عن حالة الطلب أو التوصيل |
+| `return_refund` | `returns` | طلب إرجاع أو استبدال أو استرداد |
 
----
+And one of three actions:
 
-## Architecture
-
-Dependencies point inward only. Nothing in `domain/` or `service/` knows that
-scikit-learn, FastAPI, or a filesystem exist.
-
-```
-api/main.py ───────────── composition root: the only place concretes are wired
-   │
-   ├── config.py ───────── Settings (pydantic-settings, INTENT_ prefix)
-   ├── api/schemas.py ──── HTTP wire contracts (separate from domain entities)
-   ├── adapters/ ───────── SklearnIntentModel — the only module importing sklearn/joblib
-   │       implements ↓
-   ├── service/
-   │     ├── interfaces.py  IntentModel protocol (predict, model_version, labels)
-   │     └── classifier.py  IntentClassifier — orchestration only
-   └── domain/
-         └── entities.py    CustomerMessage, IntentPrediction, Intent
-```
-
-| Layer | May import | Responsibility |
+| Action | When | What the caller does |
 |---|---|---|
-| `domain` | stdlib, pydantic | The vocabulary: what a message and a prediction are |
-| `service` | `domain` | Orchestrating the use case against a port |
-| `adapters` | anything | Translating a port into a concrete ML library |
-| `config` / `api` | anything | Configuration, wiring, HTTP |
+| `auto_route` | confidence ≥ `0.60`, **or** an urgency term is present | Send it to `department` at `priority` |
+| `human_review` | `0.25` ≤ confidence < `0.60` | An operator confirms the department first |
+| `reject` | confidence < `0.25` | Return to the sender for clarification |
 
-### Design decisions
+Those two thresholds were **measured, not chosen**: real messages score
+0.87–0.99 and gibberish scores 0.20–0.34, so `0.60` and `0.25` sit inside the
+empty gap between them. See [BENCHMARKS.md](BENCHMARKS.md).
 
-**The model is built from source, never downloaded.** `train/generate_dataset.py`
-is seeded (`SEED = 42`) and its output is sorted before writing, so it produces
-byte-identical CSVs on every run — verified by regenerating and diffing
-checksums. The Docker build and the CI pipeline both regenerate the dataset and
-retrain rather than consuming a committed binary, so "the model" is always
-reproducible from code.
+### The safety rule
 
-**Feature extraction lives inside the artifact.** The TF-IDF vectoriser and the
-classifier are fit together as one sklearn `Pipeline` and pickled as a unit, so
-the serving adapter never re-implements preprocessing. This is the structural
-defence against training/serving skew: there is no second copy of the feature
-logic that could drift.
+A message containing a term from a small, hand-curated list (`حريق`, `تسرب`,
+`غاز`, `دخان`, `انفجار`, `اصابة`, …) is escalated to `urgent` and
+auto-routed **regardless of model confidence**. A false escalation costs one
+wasted human minute; a missed gas leak does not compare.
 
-**The artifact validates itself at load time.** `SklearnIntentModel.load()`
-compares `pipeline.classes_` against the artifact's `labels` list and raises on
-mismatch, turning a silent label-mapping bug into an immediate startup failure.
-
-**Failures are not swallowed.** `IntentClassifier` has no exception handling at
-all — a broken model raises, and the API layer decides the response (500 with a
-logged traceback, and an incremented error counter). Returning a plausible-looking
-default intent on failure would hide outages from every downstream consumer.
-
-**A missing artifact degrades, it does not crash-loop.** If the model file is
-absent at startup the service still boots: `/v1/health` keeps answering 200
-(the process is alive), while `/v1/ready` reports 503 with
-`model_loaded: false` and `/v1/predict` returns 503. An orchestrator sees a clear unhealthy
-signal instead of a container restarting with no explanation.
-
-**API schemas are separate from domain entities.** `api/schemas.py` holds the
-wire contracts; `domain/entities.py` holds the business vocabulary. They look
-similar today, but keeping them apart means a future HTTP concern (versioning,
-an envelope, pagination) never leaks inward.
+The list is deliberately hand-written rather than learned, so it is reviewable
+by a non-engineer and does not change silently when the model is retrained. The
+scan runs on normalised text, so diacritics (`حَريق`), tatweel (`حــريق`) and
+punctuation cannot defeat it — `tests/behavioural/test_invariance.py` pins
+that, and `test_directional.py` asserts that **every** term in the list
+actually escalates, so adding one is self-verifying.
 
 ---
 
 ## API
 
-All routes are versioned under `/v1`, so a breaking change can ship as
-`/v2` while existing clients keep working.
+All routes are under `/v1`, so a breaking change can ship as `/v2` without
+moving clients. Every response uses the same envelope.
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| `POST` | `/v1/predict` | API key | Classify one message |
-| `GET` | `/v1/health` | none | **Liveness** — no I/O, no model access, answers instantly |
-| `GET` | `/v1/ready` | none | **Readiness** — `503` until the model is loaded *and* warmed up |
-| `GET` | `/v1/model-info` | API key | Model version and the label set it was trained on |
-| `GET` | `/v1/metrics` | API key | Request counts, per-intent breakdown, error count |
-| `GET` | `/docs` | none | Auto-generated OpenAPI documentation |
+| Route | Auth | Purpose |
+|---|---|---|
+| `POST /v1/predict` | API key | Decide on one message |
+| `GET /v1/health` | none | **Liveness** — no I/O, no model access, always fast |
+| `GET /v1/ready` | none | **Readiness** — 503 until the model is loaded *and* warmed |
+| `GET /v1/policy` | API key | The live thresholds, departments and urgency terms |
+| `GET /v1/metrics` | API key | Request, decision, error and cache-hit counters |
 
-**Liveness and readiness are deliberately separate.** `/v1/health` answers
-"is the process alive" and touches nothing — restarting on its failure is
-correct only when the process itself is broken. `/v1/ready` answers "can this
-instance serve traffic", and stays `503` until a warm-up prediction has
-actually returned, so a load balancer never hands a real user the slow first
+**Liveness vs readiness** is a real split, not two names for one check.
+`/health` answers instantly even while the model is loading or after it has
+failed to load — restarting on a failed liveness probe is only correct when the
+*process* is broken. `/ready` returns 503 until a throwaway warm-up prediction
+has actually returned, so a load balancer never hands a user the slow first
 request.
 
-Every prediction response carries a unique `trace_id`, also written to the
-logs, so one request can be found among thousands.
+### The envelope
 
-Validation is enforced by pydantic at the boundary: empty text, missing fields,
-and text over 2000 characters all return `422` before the model is ever called —
-and those requests are deliberately *not* counted as served predictions in
-`/metrics`.
+Success and failure have the same shape:
+
+```json
+{"data": {...}, "error": null, "meta": {"trace_id": "..."}}
+{"data": null, "error": {"code": "validation_error", "message": "...", "fields": ["body.txt"]}, "meta": {"trace_id": "..."}}
+```
+
+`error.code` is stable and machine-readable; `error.message` is for humans and
+may be reworded. The trace id is also returned as the `X-Trace-Id` header and
+written to every log line for that request.
+
+| Status | `error.code` | Cause |
+|---|---|---|
+| 401 | `unauthorized` | Missing or invalid API key |
+| 411 | `length_required` | Body without `Content-Length` |
+| 413 | `payload_too_large` | Body over `INTENT_MAX_REQUEST_BYTES` |
+| 422 | `validation_error` | Unknown field, empty text, or text over 2 000 chars |
+| 429 | `rate_limited` | Over the per-caller budget (`Retry-After` set) |
+| 500 | `internal_error` | Unhandled failure — details stay in the logs |
+| 503 | `service_unavailable` | Model not loaded |
+
+---
+
+## Architecture
+
+```
+src/intent_service/
+├── domain/      entities + policy   ← stdlib & pydantic only. No I/O.
+├── service/     use-case + Protocol ports
+├── adapters/    sklearn, redis      ← the only files that import them
+└── api/         FastAPI, auth, middleware, envelope
+config.py        one typed, fail-fast Settings
+```
+
+Dependencies point inward only. The service layer depends on `Protocol` ports
+(`IntentModel`, `DecisionCache`), never on concrete adapters — which is why the
+unit suite tests it with a six-line fake and no model artifact, and why
+swapping sklearn for a hosted API means writing one adapter and changing one
+line in the composition root.
+
+**The contract is enforced by a tool, not by reviewer memory.**
+`.importlinter` declares four contracts — the layering, the domain's purity,
+the service's independence from adapters, and the confinement of sklearn/redis
+to the adapter layer. `make lint` and CI both run `lint-imports`, so a
+violation fails the pull request that introduces it.
+
+`api/main.py` is the composition root and the only place concrete
+implementations are named. There is deliberately no module-level
+`app = create_app()`: building the app reads configuration, so a module-level
+instance would do real work at import time and importing the module would fail
+whenever the environment is incomplete. `create_app` is a factory, launched
+with `--factory`.
+
+---
+
+## Tests
+
+```bash
+make gate    # 6.1 s — lint, types, contract, unit + integration
+make test    # 11.3 s — everything, with the branch-coverage gate
+```
+
+| Layer | Tests | Asks |
+|---|---|---|
+| **Unit** | 72 | Is each piece correct in isolation? No model, no HTTP. |
+| **Integration** | 35 | Is the wiring right? Real model, real middleware, via TestClient. |
+| **Behavioural** | 94 | Does the *system* behave? Against the real trained artifact. |
+
+The behavioural layer is four files, each pinning a different kind of claim:
+
+- **`test_invariance.py`** — meaning-preserving edits (whitespace,
+  punctuation, diacritics, tatweel) must not change the decision.
+- **`test_directional.py`** — adding an urgency term can only raise priority,
+  never lower it, and can never turn an actionable message into a rejection.
+  Also that higher confidence never *reduces* automation.
+- **`test_golden.py`** — 18 fixed messages, with their approved decisions
+  recorded in `golden_decisions.json`.
+- **`test_model_quality.py`** — six hand-written messages that appear nowhere
+  in the generator, so a pass means generalisation rather than memorisation.
+
+**Branch** coverage is **95.5%** against an 80% requirement; the domain and
+service layers are at 100%. Branch rather than line, because a policy made of
+`if`/`elif` bands can hit every line while never exercising the `human_review`
+or `reject` paths.
+
+### If a golden test fails
+
+It is a **behaviour change, not a broken test**. Read the diff, decide whether
+the new behaviour is better, and fix the code if it is not. If it genuinely is
+better:
+
+```bash
+python -m scripts.regenerate_golden \
+  --reviewed-by "Your Name" --reason "why this behaviour should change"
+```
+
+The generator refuses to run without both flags, prints a full diff of every
+decision it would change, requires interactive confirmation, and writes the
+reviewer and reason into the file — so `git blame` names a person and an
+unexplained regeneration is visible in review rather than buried in a green
+tick.
+
+---
+
+## CI/CD
+
+Six stages, in `.github/workflows/ci.yml`:
+
+1. **Fast gate** — lint, format, strict mypy, import-linter, unit + integration.
+   Budget-checked at 60 s, with `timeout-minutes: 2` as a backstop.
+2. **Secret scan** — gitleaks over the **full history** (`fetch-depth: 0`). A
+   key removed in a later commit is still a leaked key.
+3. **Dependency audit** — `pip-audit --strict`.
+4. **Train & test** — trains from source, re-verifies that the seeded generator
+   is byte-identical across runs, then all three layers plus the coverage gate.
+5. **Image** — builds, fails over 500 MB, runs `scripts/smoke.sh` against the
+   real container, and brings the compose stack up to confirm Redis attaches.
+6. **Publish** — GHCR, **only** on push to `main`, tagged by commit SHA.
+
+### Branch protection on `main`
+
+Configure under *Settings → Branches → Add rule* for `main`:
+
+- ☑ Require a pull request before merging — **1 approval**
+- ☑ Require status checks to pass: `Fast gate (< 60s)`,
+  `Secret scan (full history)`, `Dependency audit`,
+  `Train & full test pyramid`, `Build image, check size & smoke test`
+- ☑ Require branches to be up to date before merging
+- ☑ Require conversation resolution before merging
+- ☐ Allow force pushes — **disabled**
+- ☐ Allow deletions — **disabled**
 
 ---
 
 ## Configuration
 
-`INTENT_API_KEYS` is **required** -- the service refuses to start without it
-unless authentication is explicitly disabled. Everything else is optional and
-defaults to a safe value. Override via environment variables (prefix
-`INTENT_`) or a `.env` file.
+Every variable is read in exactly one place (`src/intent_service/config.py`),
+typed, and validated at startup. A misconfigured service **refuses to boot**
+with a message naming the variable, rather than booting and failing every
+request. Two guards in particular:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `INTENT_API_KEYS` | *(none)* | **Required.** Comma-separated accepted API keys |
-| `INTENT_REQUIRE_API_KEY` | `true` | Set `false` for local development only |
-| `INTENT_RATE_LIMIT_REQUESTS` | `60` | Requests allowed per window, per caller |
-| `INTENT_RATE_LIMIT_WINDOW_SECONDS` | `60` | Length of the rate-limit window |
-| `INTENT_CORS_ORIGINS` | *(empty)* | Empty denies all cross-origin requests |
-| `INTENT_MAX_REQUEST_BYTES` | `16384` | Bodies larger than this get `413` |
-| `INTENT_ENABLE_DOCS` | `false` | Set `true` to expose the interactive `/docs` |
-| `INTENT_TRUST_PROXY_HEADERS` | `false` | Read `X-Forwarded-For` for rate-limit identity — only behind a trusted proxy |
-| `INTENT_MODEL_PATH` | `models/intent_model.joblib` | Where the artifact is read from |
-| `INTENT_CONFIDENCE_FLOOR` | `0.15` | Below this, responses set `low_confidence: true` |
-| `INTENT_LOG_LEVEL` | `INFO` | Log verbosity |
-| `INTENT_API_TITLE` | `Intent Classification Service` | Title shown in `/docs` |
+- `INTENT_REQUIRE_API_KEY=true` with an empty `INTENT_API_KEYS` is refused —
+  otherwise every call 401s and the outage looks like a code bug.
+- `INTENT_REJECT_FLOOR` above `INTENT_AUTO_ROUTE_FLOOR` is refused — the
+  `human_review` band would be empty and nothing would ever reach a person,
+  a safety regression no status code would reveal.
 
-The service **refuses to start** if `INTENT_REQUIRE_API_KEY` is true while
-`INTENT_API_KEYS` is empty — a misconfiguration fails loudly at boot instead of
-silently rejecting every request.
+See [.env.example](.env.example) for the full annotated list. Defaults are the
+safe ones: auth required, CORS closed, docs off, proxy headers untrusted.
+
+**Logs** are JSON on stdout, correlated by `trace_id`. The formatter copies
+only allowlisted fields out of each record, so message text is never logged at
+any level — a caller quotes their trace id in a support ticket instead of
+pasting their message into one.
 
 ---
 
-## Testing strategy
+## Known limitations
 
-Three layers, each answering a different question:
+Stated rather than hidden — each is a real constraint of this build.
 
-| Suite | Question it answers | Needs the real model? |
-|---|---|---|
-| `tests/unit/` | Is the logic correct in isolation? | No — uses a `ConstantModel` double |
-| `tests/integration/` | Does the HTTP contract hold end to end? | Yes |
-| `tests/behavioural/` | Is the model actually any good? | Yes |
-
-The behavioural suite is the one that treats the model as the thing under test:
-
-- **Accuracy gate** — at least 90% on the held-out test split, so a training
-  change that quietly degrades quality fails the build.
-- **Generalisation probes** — six hand-written sentences that appear in *no*
-  template in `train/generate_dataset.py`, with different products and phrasing.
-  Passing these means the model generalised rather than memorised.
-- **Determinism** — identical input must give identical output.
-- **Bounded confidence** — adversarial inputs (emoji, digits, 500-character
-  strings, mixed English/Arabic) must still yield a confidence in `[0, 1]`.
-
-```
-$ pytest
-71 passed
-```
+- **The rate limiter is in-process.** Each replica enforces its own budget, so
+  N replicas allow N× the configured rate. A shared limiter belongs in the
+  Redis that is already in the stack; it is not implemented.
+- **The training data is synthetic.** It is generated, seeded, and
+  reproducible, but it is not real customer traffic. The test-split accuracy of
+  1.000 measures the generator's consistency, not the model's generalisation —
+  which is exactly why the hand-written probes in `test_model_quality.py`
+  exist and why BENCHMARKS.md reports both.
+- **Urgency detection is exact-token matching** on a curated list. It will not
+  catch a paraphrase ("الدنيا اشتعلت"). That is the deliberate trade for a
+  safety rule a non-engineer can audit and that cannot shift under a retrain.
+- **API keys are compared against a plaintext env list.** Fine for this scope;
+  a real deployment wants hashed keys with rotation and per-key scopes.
+- **`docs/` is off by default.** Set `INTENT_ENABLE_DOCS=true` to browse the
+  OpenAPI schema locally.
 
 ---
 
-## Security
+## Further reading
 
-Full policy in [SECURITY.md](SECURITY.md). Every control below is covered by a
-test and was verified against a running service.
-
-| Control | Behaviour |
-|---|---|
-| API key (`X-API-Key`) | Required on `/predict`, `/model-info`, `/metrics` → `401` without it |
-| Constant-time comparison | `secrets.compare_digest` — no timing oracle on the key |
-| Rate limiting | 60 req/60s per caller → `429` with `Retry-After` |
-| Body size cap | 16 KiB → `413`, checked before the body is read |
-| CORS | **Denied by default**; opened only via `INTENT_CORS_ORIGINS` |
-| Security headers | `nosniff`, `DENY`, `no-store`, CSP, Permissions-Policy — on every response including errors |
-| Non-root container | `appuser` (uid 1000), `no-new-privileges`, read-only filesystem |
-| Fail-fast config | Refuses to boot if auth is required but no keys are set |
-
-Three decisions worth defending:
-
-- **`/health` is open and exempt from rate limiting.** Liveness probes carry no
-  credentials, and a probe must never be throttled into a false "unhealthy".
-  It exposes only whether the artifact loaded.
-- **Authentication runs before inference.** An unauthenticated caller cannot
-  spend model compute — asserted by `test_auth_runs_before_the_model`.
-- **Rate limiting runs before authentication.** Counting rejected requests too
-  is what stops an attacker flooding the service with cheap `401`s.
-
-Generate a key with:
-
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
----
-
-## Honest limitations
-
-These are real and worth stating rather than hiding:
-
-1. **The dataset is synthetic and lexically separable.** Test accuracy is 100%
-   across a balanced 45-per-class split, which reflects the data being
-   template-generated, not a model that would hold up on real customer
-   messages. The generalisation probes in the behavioural
-   suite are the meaningful signal here, not the headline accuracy. Replacing
-   `train/generate_dataset.py` with real labelled messages is the single highest-value
-   next step.
-2. **Every class is balanced, but only because the generator was tuned to make
-   it so.** Each label reaches its full quota of unique examples, and the
-   generator now prints a warning naming any label that exhausts its template
-   combinations early -- silence there would hide a skewed split behind a
-   healthy-looking accuracy number.
-3. **`LinearSVC` has no calibrated probabilities.** The `confidence` field is a
-   softmax over decision-function margins — useful for ranking and for the
-   `low_confidence` flag, but it is not a true probability and should not be read
-   as one.
-4. **`/metrics` is an in-process counter.** It resets on restart and is not
-   aggregated across replicas. A real deployment would export to Prometheus.
-5. **API keys are static shared secrets.** There is no rotation, no expiry and
-   no per-key scope. A production system should move to short-lived tokens
-   (OAuth2 / JWT) issued per client.
-6. **The body-size limit relies on `Content-Length`.** Requests without it are
-   rejected with `411` rather than being streamed and measured, so a proxy-level
-   limit is still the right outer defence.
-7. **Rate-limit identity falls back to the socket IP.** Behind a reverse proxy
-   every unauthenticated caller would share one bucket, so set
-   `INTENT_TRUST_PROXY_HEADERS=true` *only* when a trusted proxy overwrites
-   `X-Forwarded-For` -- the header is caller-controlled otherwise.
-
----
-
-## Project layout
-
-```
-intent-service/
-├── Dockerfile                  # two-stage: trains in builder, ships runtime only
-├── docker-compose.yml
-├── pyproject.toml              # deps, ruff, mypy, pytest config
-├── .pre-commit-config.yaml
-├── .github/
-│   ├── workflows/ci.yml        # quality → train & test → image smoke test
-│   └── pull_request_template.md
-├── train/
-│   ├── generate_dataset.py     # deterministic synthetic data (seed=42)
-│   └── train_model.py          # TF-IDF + LinearSVC → versioned joblib artifact
-├── src/intent_service/
-│   ├── config.py
-│   ├── domain/entities.py
-│   ├── service/{interfaces,classifier}.py
-│   ├── adapters/sklearn_model.py
-│   └── api/{main,schemas,metrics}.py
-└── tests/{unit,integration,behavioural}/
-```
-
----
+- [DECISIONS.md](DECISIONS.md) — five engineering decisions, each with the
+  alternative rejected and what it cost
+- [BENCHMARKS.md](BENCHMARKS.md) — real measurements: latency, build, test
+  times, coverage, confidence separation
+- [SECURITY.md](SECURITY.md) — threat model and the controls in place
+- [DOCKER.md](DOCKER.md) — container internals
 
 ## Licence
 
-Proprietary — all rights reserved. See [LICENSE](LICENSE). Instructors and
-authorised examiners of SDA-AIE-113 may access and run this code for
-assessment purposes only.
+MIT — see [LICENSE](LICENSE).
