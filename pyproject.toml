@@ -9,7 +9,7 @@ description = "Arabic customer-message intent classifier, served as a containeri
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
+    "uvicorn[standard]>=0.54.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.4.0",
     "scikit-learn>=1.5.0",
