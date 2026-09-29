@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Arabic customer-message intent classifier, served as a containerised REST API"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115.0",
+    "fastapi>=0.141.1",
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.4.0",
