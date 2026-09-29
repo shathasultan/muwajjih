@@ -6,7 +6,7 @@
 # this build. Re-running `docker build` reproduces the same model, which is
 # the whole point of pinning the seed.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN python -m train.generate_dataset && python -m train.train_model
 # training code, no dev/test dependencies: a smaller image and a smaller
 # attack surface than the builder stage.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 WORKDIR /app
 
